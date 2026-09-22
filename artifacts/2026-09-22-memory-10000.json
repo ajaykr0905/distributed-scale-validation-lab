@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-09-22",
+  "status": "verified local memory-adapter run",
+  "environment": {
+    "architecture": "arm64",
+    "operating_system": "macOS 26.6.2",
+    "go_version": "go1.26.4",
+    "external_services": false
+  },
+  "workload": {
+    "dataset": "synthetic",
+    "seed": "portfolio-verified",
+    "entities": 10000,
+    "workers": 8,
+    "max_attempts": 3,
+    "queue_adapter": "memory",
+    "store_adapter": "memory"
+  },
+  "command": "go run ./cmd/lab -seed portfolio-verified -count 10000 -workers 8 -max-attempts 3",
+  "samples": [
+    { "generated": 10000, "stored": 10000, "elapsed_ms": 13 },
+    { "generated": 10000, "stored": 10000, "elapsed_ms": 18 },
+    { "generated": 10000, "stored": 10000, "elapsed_ms": 18 },
+    { "generated": 10000, "stored": 10000, "elapsed_ms": 19 },
+    { "generated": 10000, "stored": 10000, "elapsed_ms": 18 }
+  ],
+  "median_elapsed_ms": 18,
+  "limitations": [
+    "This is a local in-memory functional benchmark, not a RabbitMQ or PostgreSQL result.",
+    "The result is not a claim about production throughput or hardware-independent performance.",
+    "The working tree had not yet been published when this artifact was captured."
+  ]
+}
