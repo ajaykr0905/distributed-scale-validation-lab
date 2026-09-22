@@ -10,7 +10,8 @@ It is designed as a public portfolio project and uses synthetic entities only.
 - A transport-neutral queue contract with ack and nack semantics
 - Concurrent workers and idempotency by stable message ID
 - Bounded retries with an inspectable dead-letter sink
-- A PostgreSQL-compatible store implemented with `database/sql`
+- A PostgreSQL adapter backed by `database/sql` and pgx
+- A RabbitMQ adapter with durable topology, persistent messages, publisher confirms, and a dead-letter exchange
 - A small REST control API with health and Prometheus-format metrics endpoints
 - Injected validation and persistence failures in dependency-free unit tests
 - Optional local RabbitMQ and PostgreSQL infrastructure
@@ -18,7 +19,8 @@ It is designed as a public portfolio project and uses synthetic entities only.
 
 ## Run locally
 
-Requirements: Go 1.22 or newer. No service or third-party Go module is required.
+Requirements: Go 1.23 or newer. RabbitMQ and PostgreSQL are optional for the
+default in-memory workflow; their Go client modules are downloaded normally.
 
 ```sh
 go test ./...
@@ -42,9 +44,22 @@ docker compose --profile infra up -d
 docker compose --profile infra down
 ```
 
-The executable uses dependency-free memory adapters by default. The containers
-are provided for developing integration adapters; this repository does not claim
-that an AMQP adapter or an external-database benchmark is already implemented.
+The executable uses dependency-free memory adapters by default. The RabbitMQ
+and PostgreSQL adapters are exercised by an opt-in integration test against the
+dedicated Compose profile:
+
+```sh
+docker compose --profile infra up -d
+SCALE_LAB_INTEGRATION=1 go test -tags=integration ./integration
+docker compose --profile infra down
+```
+
+The integration path verifies a confirmed publish, manual acknowledgement, and
+an idempotent PostgreSQL write. No external-service performance result is
+claimed until its environment and artifact are recorded.
+
+The unit suite runs with Go's race detector on every pull request. CI also
+starts the dedicated Compose services and executes the external-adapter test.
 
 ## Kubernetes
 

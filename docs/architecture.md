@@ -4,16 +4,16 @@ The lab models an at-least-once validation pipeline without relying on private
 systems or datasets.
 
 ```text
-deterministic generator
+deterministic generator / REST control API
           |
           v
-   Queue interface -------- optional future AMQP adapter
+   Queue interface -------- RabbitMQ adapter
           |
           v
        workers ---- validation fingerprint
           |
           v
-    Store interface ------- PostgreSQL implementation
+    Store interface ------- PostgreSQL adapter
           |
           v
  unique message_id result
@@ -38,10 +38,10 @@ validation, but it cannot create a second durable result.
 - `store.Store` isolates idempotent persistence from a database.
 - `validator.Validator` makes validation policy independently testable.
 
-The default executable intentionally selects the in-memory adapters. The Compose
-file supplies RabbitMQ and PostgreSQL only as local infrastructure for adapter
-experiments; it does not imply that those adapters or any benchmark against them
-have been completed.
+The default executable intentionally selects the in-memory adapters. An opt-in
+integration test uses the Compose RabbitMQ and PostgreSQL services to verify the
+external adapter contract. The adapter check is not presented as a performance
+benchmark.
 
 ## Public-safety boundary
 

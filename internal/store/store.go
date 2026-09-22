@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sync"
 
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/model"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // Store persists results exactly once by message ID.
@@ -46,6 +48,46 @@ type PostgreSQL struct {
 }
 
 func NewPostgreSQL(db *sql.DB) *PostgreSQL { return &PostgreSQL{db: db} }
+
+func OpenPostgreSQL(ctx context.Context, url string) (*PostgreSQL, error) {
+	database, err := sql.Open("pgx", url)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres: %w", err)
+	}
+	if err := database.PingContext(ctx); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+	return NewPostgreSQL(database), nil
+}
+
+func (s *PostgreSQL) EnsureSchema(ctx context.Context) error {
+	const statement = `
+		CREATE TABLE IF NOT EXISTS validation_results (
+			message_id TEXT PRIMARY KEY,
+			endpoint_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			fingerprint TEXT NOT NULL,
+			checked_at TIMESTAMPTZ NOT NULL
+		)`
+	if _, err := s.db.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("ensure validation schema: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgreSQL) Contains(ctx context.Context, messageID string) (bool, error) {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT EXISTS (SELECT 1 FROM validation_results WHERE message_id = $1)",
+		messageID,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check validation result: %w", err)
+	}
+	return exists, nil
+}
+
+func (s *PostgreSQL) Close() error { return s.db.Close() }
 
 func (s *PostgreSQL) PutIfAbsent(ctx context.Context, result model.ValidationResult) (bool, error) {
 	const statement = `
