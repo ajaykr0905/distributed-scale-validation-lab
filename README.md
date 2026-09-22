@@ -13,6 +13,7 @@ It is designed as a public portfolio project and uses synthetic entities only.
 - A PostgreSQL adapter backed by `database/sql` and pgx
 - A RabbitMQ adapter with durable topology, persistent messages, publisher confirms, and a dead-letter exchange
 - A small REST control API with health and Prometheus-format metrics endpoints
+- Signal-aware API shutdown that drains in-flight HTTP requests within a bounded window
 - Injected validation and persistence failures in dependency-free unit tests
 - Optional local RabbitMQ and PostgreSQL infrastructure
 - A Kubernetes Job with a restricted container security context
