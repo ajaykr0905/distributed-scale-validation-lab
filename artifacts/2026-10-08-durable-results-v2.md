@@ -6,6 +6,14 @@ in the isolated Docker Desktop `ajay-durable-20261008` project. Exact configured
 image references and immutable image IDs are in the raw benchmark; Compose
 pins upstream manifest digests.
 
+The original run recorded checkout HEAD, but did not capture executable hashes
+at measurement time. [Later inspection of the original binaries](2026-10-08-binary-inspection-v2.json)
+found both declaring the expected main packages and clean source `6b01125`.
+That supports current binary/source correspondence; it cannot retroactively
+prove the exact bytes executed during the twelve trials. The raw receipt is
+unchanged. Future harness runs require matching clean build metadata and record
+worker/harness hashes, with an explicit unverified override for exploration.
+
 ## Measured boundary and workload
 
 Latency starts on the client monotonic clock immediately before HTTP submission

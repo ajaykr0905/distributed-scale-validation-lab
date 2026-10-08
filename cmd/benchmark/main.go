@@ -53,19 +53,21 @@ type trial struct {
 }
 
 type report struct {
-	CreatedAt       time.Time `json:"created_at"`
-	Commit          string    `json:"commit"`
-	Dirty           bool      `json:"dirty"`
-	GoVersion       string    `json:"go_version"`
-	OS              string    `json:"os"`
-	Arch            string    `json:"arch"`
-	CPUs            int       `json:"logical_cpus"`
-	Seed            string    `json:"seed"`
-	WarmupJobs      int       `json:"warmup_jobs_per_worker_count"`
-	Trials          []trial   `json:"trials"`
-	ImagePins       []string  `json:"image_pins"`
-	LatencyBoundary string    `json:"latency_boundary"`
-	Limitations     []string  `json:"limitations"`
+	CreatedAt       time.Time    `json:"created_at"`
+	Commit          string       `json:"commit"`
+	Dirty           bool         `json:"dirty"`
+	GoVersion       string       `json:"go_version"`
+	OS              string       `json:"os"`
+	Arch            string       `json:"arch"`
+	CPUs            int          `json:"logical_cpus"`
+	Seed            string       `json:"seed"`
+	WarmupJobs      int          `json:"warmup_jobs_per_worker_count"`
+	Trials          []trial      `json:"trials"`
+	ImagePins       []string     `json:"image_pins"`
+	LatencyBoundary string       `json:"latency_boundary"`
+	WorkerBinary    binaryRecord `json:"worker_binary"`
+	HarnessBinary   binaryRecord `json:"harness_binary"`
+	Limitations     []string     `json:"limitations"`
 }
 
 func main() {
@@ -74,6 +76,7 @@ func main() {
 	warmup := flag.Int("warmup", 100, "unmeasured warmup jobs per worker count")
 	seed := flag.String("seed", "public-durable-v1", "synthetic workload seed")
 	output := flag.String("output", "artifacts/local/durable-benchmark.json", "raw report path")
+	allowUnverified := flag.Bool("allow-unverified-binaries", false, "explicitly report unverified source for stale/missing/dirty build metadata")
 	flag.Parse()
 	if *count < 1 || *count > 100000 || *warmup < 1 || *warmup > 10000 || *seed == "" {
 		fatal(errors.New("invalid bounded workload"))
@@ -89,12 +92,29 @@ func main() {
 		fatal(err)
 	}
 	r := report{CreatedAt: time.Now().UTC(), GoVersion: runtime.Version(), OS: runtime.GOOS, Arch: runtime.GOARCH, CPUs: runtime.NumCPU(), Seed: *seed, WarmupJobs: *warmup, ImagePins: []string{"postgres:16.15-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea", "rabbitmq:4.2.9-management-alpine@sha256:2b5d3d29f4dde853995aac1bfbdd71c7efc764dea6409c14e2f355a79a946998"}, Limitations: []string{"Single-host local process benchmark; broker and database run in Docker Desktop, not a distributed cluster.", "Sequential HTTP producer and per-event outbox confirms can limit throughput.", "RSS/CPU samples cover API, dispatcher, and worker processes only; exclude broker/database/VM resources.", "ps CPU percentage is a process-lifetime average, not interval CPU utilization.", "Resource/queue samples start before acceptance and run throughout enqueue and drain at approximately 50ms intervals; brief peaks may still be missed.", "Queue samples measure ready messages, not unacknowledged deliveries.", "No broker outage is injected by this performance command; process-death and measured outage recovery are separate integration evidence."}}
-	if bytes, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
-		r.Commit = strings.TrimSpace(string(bytes))
+	commit, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		fatal(err)
 	}
-	if bytes, err := exec.Command("git", "status", "--porcelain").Output(); err == nil {
-		r.Dirty = len(bytes) > 0
+	r.Commit = strings.TrimSpace(string(commit))
+	status, err := exec.Command("git", "status", "--porcelain").Output()
+	if err != nil {
+		fatal(err)
 	}
+	r.Dirty = len(status) > 0
+	r.WorkerBinary, err = checkBinary(*bin, r.Commit, modulePath+"/cmd/durable", r.Dirty, *allowUnverified)
+	if err != nil {
+		fatal(fmt.Errorf("worker binary provenance: %w", err))
+	}
+	harnessPath, err := os.Executable()
+	if err != nil {
+		fatal(err)
+	}
+	r.HarnessBinary, err = checkBinary(harnessPath, r.Commit, modulePath+"/cmd/benchmark", r.Dirty, *allowUnverified)
+	if err != nil {
+		fatal(fmt.Errorf("harness binary provenance: %w", err))
+	}
+	r.Limitations = append(r.Limitations, "Binary source verification checks Go embedded VCS declarations and SHA-256; it is not independent build attestation.")
 	project := os.Getenv("SCALE_LAB_DOCKER_PROJECT")
 	if !strings.HasPrefix(project, "ajay-durable-") {
 		fatal(errors.New("SCALE_LAB_DOCKER_PROJECT must identify the isolated ajay-durable-* public Compose project"))
@@ -119,6 +139,13 @@ func main() {
 			fatal(err)
 		}
 		r.Trials = append(r.Trials, values...)
+	}
+	currentWorker, err := inspectBinary(*bin)
+	if err != nil {
+		fatal(err)
+	}
+	if currentWorker.SHA256 != r.WorkerBinary.SHA256 {
+		fatal(errors.New("worker executable changed during benchmark"))
 	}
 	body, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {

@@ -52,6 +52,16 @@ the successful configurations. Broker recovery timing is emitted separately by
 `TestIndependentProcessesAndBrokerRestart`, includes Compose start/health wait,
 and is not a throughput sample. No benchmark command injects a failure.
 
+Build both executables from the same clean commit before measuring. The harness
+records SHA-256 and Go embedded VCS/main-package metadata for itself and the
+worker. By default, stale revisions, dirty or missing metadata, and unexpected
+main/module packages fail verification before worker launch. It checks the
+worker hash again before publishing the report to detect executable replacement.
+An explicit `-allow-unverified-binaries` permits exploratory Go builds while
+recording `verified_build_metadata: false` and the reason; these runs must not
+be described as verified source attribution. Embedded VCS metadata is a build
+declaration, not independent supply-chain attestation.
+
 Set `SCALE_LAB_RECOVERY_RECEIPT` to an absolute ignored JSON output path when
 running the recovery integration test to record its actual restart duration,
 accounting, source SHA, and measurement boundary. The receipt is written only
@@ -64,6 +74,10 @@ The original `2026-10-08-durable-benchmark.json` is retained byte-for-byte as
 pre-fix evidence for clean source `581883c`. Its latency fields are a pre-commit
 SQL timestamp interval and must not be presented as committed-result end-to-end
 latency. Use the versioned v2 report for the observed-result measurement above.
+The v2 report predates executable-hash capture: its
+`2026-10-08-binary-inspection-v2.json` supplement records later inspection of the
+original binaries, matching source metadata, and the limitation that exact
+run-time bytes cannot be retroactively proven.
 
 ## Original unit-level worker benchmark
 
