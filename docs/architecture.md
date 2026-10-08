@@ -1,5 +1,9 @@
 # Architecture
 
+The independent durable backend is described in
+[durable-backend.md](durable-backend.md). The diagram and contract below describe
+the original compatible in-memory lab and its individual external adapters.
+
 The lab models an at-least-once validation pipeline without relying on private
 systems or datasets.
 

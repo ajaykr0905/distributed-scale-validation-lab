@@ -6,3 +6,4 @@ coverage.out
 benchmark.txt
 *.log
 .env
+artifacts/local/
