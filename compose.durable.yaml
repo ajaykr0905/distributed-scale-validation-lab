@@ -1,0 +1,30 @@
+# Isolated local lab only. Credentials and ports are development fixtures.
+services:
+  postgres:
+    image: postgres:16.15-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    environment:
+      POSTGRES_DB: scale_lab
+      POSTGRES_USER: scale_lab
+      POSTGRES_PASSWORD: local-development-only
+    ports: ["127.0.0.1:25432:5432"]
+    volumes: ["durable-postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scale_lab -d scale_lab"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  rabbitmq:
+    image: rabbitmq:4.2.9-management-alpine@sha256:2b5d3d29f4dde853995aac1bfbdd71c7efc764dea6409c14e2f355a79a946998
+    environment:
+      RABBITMQ_DEFAULT_USER: scale_lab
+      RABBITMQ_DEFAULT_PASS: local-development-only
+    ports: ["127.0.0.1:25672:5672", "127.0.0.1:25673:15672"]
+    volumes: ["durable-rabbitmq:/var/lib/rabbitmq"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+volumes:
+  durable-postgres:
+  durable-rabbitmq:

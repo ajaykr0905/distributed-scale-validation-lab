@@ -6,3 +6,5 @@ coverage.out
 benchmark.txt
 *.log
 .env
+artifacts/local/
+__pycache__/

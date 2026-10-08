@@ -19,6 +19,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test -race ./...
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l cmd internal integration)"
 
   adapters:
     runs-on: ubuntu-latest
@@ -33,3 +35,23 @@ jobs:
       - run: SCALE_LAB_INTEGRATION=1 go test -tags=integration ./integration
       - if: always()
         run: docker compose --profile infra down
+
+  durable-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SCALE_LAB_INTEGRATION: "1"
+      SCALE_LAB_DOCKER_PROJECT: ajay-durable-ci
+      SCALE_LAB_POSTGRES_URL: postgres://scale_lab:local-development-only@127.0.0.1:25432/scale_lab?sslmode=disable
+      SCALE_LAB_RABBITMQ_URL: amqp://scale_lab:local-development-only@127.0.0.1:25672/
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: docker compose -p ajay-durable-ci -f compose.durable.yaml up --detach --wait
+      - run: go test -race -tags=integration -v ./internal/durable
+      - run: go build ./cmd/durable ./cmd/benchmark
+      - if: always()
+        run: docker compose -p ajay-durable-ci -f compose.durable.yaml down

@@ -1,0 +1,18 @@
+{
+  "created_at": "2026-10-08T06:39:09.298893Z",
+  "commit": "6b01125cb71d49fc2fba1cf009aeb7d45e61cab6",
+  "dirty": false,
+  "broker_restart_recovery_seconds": 3.401676166,
+  "counts": {
+    "accepted": 2,
+    "completed": 2,
+    "failed": 0,
+    "pending": 0,
+    "retrying": 0,
+    "outbox_pending": 0,
+    "retries": 0,
+    "duplicates": 1,
+    "results": 2
+  },
+  "measurement_boundary": "From Compose start command through health wait and second job result commit; local single-host only."
+}

@@ -1,0 +1,34 @@
+{
+  "recorded_at": "2026-10-08T06:48:53Z",
+  "measured_source_commit": "6b01125cb71d49fc2fba1cf009aeb7d45e61cab6",
+  "benchmark_artifact_sha256": "598728047816eb92794659ec7febb805b55b80310e6bb328392a3e4f980b896f",
+  "inspection_scope": "Original native worker and benchmark binaries inspected after measurement, before either was rebuilt.",
+  "worker_binary": {
+    "path": "bin/durable",
+    "sha256": "53a16461d7962514414ba337d933e786d72742fe39796db989df7c57023d1cb0",
+    "main_package": "github.com/ajaykr0905/distributed-scale-validation-lab/cmd/durable",
+    "module_path": "github.com/ajaykr0905/distributed-scale-validation-lab",
+    "go_version": "go1.26.4",
+    "vcs_revision": "6b01125cb71d49fc2fba1cf009aeb7d45e61cab6",
+    "vcs_time": "2026-10-08T06:38:36Z",
+    "vcs_modified": "false",
+    "declared_revision_matches_measured_source": true
+  },
+  "harness_binary": {
+    "path": "bin/durable-benchmark",
+    "sha256": "cc2b8a315fac278dc7b888314ac9c3c4e88433f2ecdae8705a0d5d30aa2704a7",
+    "main_package": "github.com/ajaykr0905/distributed-scale-validation-lab/cmd/benchmark",
+    "module_path": "github.com/ajaykr0905/distributed-scale-validation-lab",
+    "go_version": "go1.26.4",
+    "vcs_revision": "6b01125cb71d49fc2fba1cf009aeb7d45e61cab6",
+    "vcs_time": "2026-10-08T06:38:36Z",
+    "vcs_modified": "false",
+    "declared_revision_matches_measured_source": true
+  },
+  "limitations": [
+    "Neither executable hash nor build metadata was captured in the original measurement receipt. This later inspection supports current binary/source correspondence but cannot retroactively prove the exact bytes executed during the twelve trials.",
+    "Go VCS metadata is an embedded build declaration, not independent build attestation.",
+    "The recovery integration tests compile separate helper/worker executables; this receipt does not bind those executable bytes.",
+    "Original measured JSON artifacts remain unchanged. Future harness runs record both executable hashes/build metadata and reject unverifiable source by default."
+  ]
+}
