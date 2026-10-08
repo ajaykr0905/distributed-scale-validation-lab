@@ -56,7 +56,7 @@ deployment. See [the durable operating contract](docs/durable-backend.md),
 [failure walkthrough](docs/recovery-demo.md), and
 [external-path measurement runbook](docs/benchmark-runbook.md).
 
-[Verified local results, 8 October 2026](artifacts/2026-10-08-durable-results.md)
+[Verified local results v2, 8 October 2026](artifacts/2026-10-08-durable-results-v2.md)
 include all twelve external-path trials, raw latencies/resource/queue samples,
 the exact clean source commit, and a measured broker recovery receipt.
 
