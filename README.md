@@ -53,7 +53,7 @@ Stop each process with Ctrl-C and stop only this isolated project with
 Its named volumes preserve state. Development credentials and localhost ports
 are public fixtures; this API has no authentication and is not an Internet
 deployment. See [the durable operating contract](docs/durable-backend.md),
-[failure walkthrough](docs/recovery-demo.md), and
+[recorded recovery checks](docs/recovery-demo.md), and
 [external-path measurement runbook](docs/benchmark-runbook.md).
 
 [Verified local results v2, 8 October 2026](artifacts/2026-10-08-durable-results-v2.md)
