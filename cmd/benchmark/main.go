@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,31 +39,33 @@ type sample struct {
 type trial struct {
 	Workers         int       `json:"workers"`
 	Trial           int       `json:"trial"`
+	DatabaseSchema  string    `json:"database_schema"`
 	Jobs            int       `json:"jobs"`
 	DurationSeconds float64   `json:"duration_seconds"`
 	Throughput      float64   `json:"completed_jobs_per_second"`
-	P50MS           float64   `json:"p50_accept_to_commit_ms"`
-	P95MS           float64   `json:"p95_accept_to_commit_ms"`
-	P99MS           float64   `json:"p99_accept_to_commit_ms"`
+	P50MS           float64   `json:"p50_submit_to_observed_result_ms"`
+	P95MS           float64   `json:"p95_submit_to_observed_result_ms"`
+	P99MS           float64   `json:"p99_submit_to_observed_result_ms"`
 	Retries         int64     `json:"retries"`
 	Duplicates      int64     `json:"duplicates"`
-	LatencyMS       []float64 `json:"raw_accept_to_commit_ms"`
+	LatencyMS       []float64 `json:"raw_submit_to_observed_result_ms"`
 	Samples         []sample  `json:"samples"`
 }
 
 type report struct {
-	CreatedAt   time.Time `json:"created_at"`
-	Commit      string    `json:"commit"`
-	Dirty       bool      `json:"dirty"`
-	GoVersion   string    `json:"go_version"`
-	OS          string    `json:"os"`
-	Arch        string    `json:"arch"`
-	CPUs        int       `json:"logical_cpus"`
-	Seed        string    `json:"seed"`
-	WarmupJobs  int       `json:"warmup_jobs_per_worker_count"`
-	Trials      []trial   `json:"trials"`
-	ImagePins   []string  `json:"image_pins"`
-	Limitations []string  `json:"limitations"`
+	CreatedAt       time.Time `json:"created_at"`
+	Commit          string    `json:"commit"`
+	Dirty           bool      `json:"dirty"`
+	GoVersion       string    `json:"go_version"`
+	OS              string    `json:"os"`
+	Arch            string    `json:"arch"`
+	CPUs            int       `json:"logical_cpus"`
+	Seed            string    `json:"seed"`
+	WarmupJobs      int       `json:"warmup_jobs_per_worker_count"`
+	Trials          []trial   `json:"trials"`
+	ImagePins       []string  `json:"image_pins"`
+	LatencyBoundary string    `json:"latency_boundary"`
+	Limitations     []string  `json:"limitations"`
 }
 
 func main() {
@@ -108,6 +112,7 @@ func main() {
 		fatal(err)
 	}
 	r.ImagePins = strings.Split(strings.TrimSpace(string(images)), "\n")
+	r.LatencyBoundary = "Client monotonic time immediately before HTTP POST through first observed committed completed-job/result join. Approximately50ms polling plus SQL/resource/scheduler overhead; no fixed upper observation-delay guarantee under load. Raw samples follow fixture order."
 	for _, workers := range []int{1, 2, 4, 8} {
 		values, err := measure(ctx, db, *bin, *seed, *warmup, *count, workers)
 		if err != nil {
@@ -134,6 +139,26 @@ func main() {
 func fatal(err error) { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
 
 func measure(ctx context.Context, db *durable.DB, bin, seed string, warmup, count, workers int) ([]trial, error) {
+	schema := "bench_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	if _, err := db.SQL.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+		return nil, err
+	}
+	parsed, err := url.Parse(os.Getenv("SCALE_LAB_POSTGRES_URL"))
+	if err != nil {
+		return nil, err
+	}
+	query := parsed.Query()
+	query.Set("search_path", schema)
+	parsed.RawQuery = query.Encode()
+	isolated, err := durable.Open(ctx, parsed.String())
+	if err != nil {
+		return nil, err
+	}
+	defer isolated.Close()
+	db = isolated
+	if err := db.EnsureSchema(ctx); err != nil {
+		return nil, err
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -144,7 +169,7 @@ func measure(ctx context.Context, db *durable.DB, bin, seed string, warmup, coun
 	var processes []*exec.Cmd
 	start := func(role string) error {
 		command := exec.CommandContext(ctx, bin, "-role", role, "-address", address, "-queue", queueName)
-		command.Env = os.Environ()
+		command.Env = append(os.Environ(), "SCALE_LAB_POSTGRES_URL="+parsed.String())
 		command.Stderr = os.Stderr
 		if err := command.Start(); err != nil {
 			return err
@@ -209,15 +234,25 @@ func measure(ctx context.Context, db *durable.DB, bin, seed string, warmup, coun
 			}
 			ids = append(ids, id)
 		}
-		initial, err := captureSample(ctx, db, broker, processes, ids)
+		observations := newObservations()
+		initial, err := captureSample(ctx, db, broker, processes, ids, observations)
 		if err != nil {
 			return nil, err
 		}
 		start := time.Now()
 		sampleCtx, stopSamples := context.WithCancel(ctx)
 		sampleResult := make(chan sampleBatch, 1)
-		go func() { sampleResult <- collectSamples(sampleCtx, db, broker, processes, ids, initial) }()
+		go func() { sampleResult <- collectSamples(sampleCtx, db, broker, processes, ids, initial, observations) }()
 		for i, endpoint := range endpoints {
+			select {
+			case batch := <-sampleResult:
+				stopSamples()
+				if batch.Err != nil {
+					return nil, batch.Err
+				}
+				return nil, errors.New("resource sampler ended before workload completion")
+			default:
+			}
 			body, _ := json.Marshal(endpoint)
 			request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/jobs", bytes.NewReader(body))
 			if err != nil {
@@ -225,6 +260,7 @@ func measure(ctx context.Context, db *durable.DB, bin, seed string, warmup, coun
 				return nil, err
 			}
 			request.Header.Set("Idempotency-Key", fmt.Sprintf("%s-%d-%d", queueName, index, i))
+			observations.Start(ids[i], time.Now())
 			response, err := client.Do(request)
 			if err != nil {
 				stopSamples()
@@ -253,11 +289,21 @@ func measure(ctx context.Context, db *durable.DB, bin, seed string, warmup, coun
 				case <-ctx.Done():
 					stopSamples()
 					return nil, ctx.Err()
+				case batch := <-sampleResult:
+					stopSamples()
+					if batch.Err != nil {
+						return nil, batch.Err
+					}
+					return nil, errors.New("resource sampler ended before workload completion")
 				case <-time.After(20 * time.Millisecond):
 				}
 			}
 		}
 		duration := time.Since(start).Seconds()
+		if _, err := captureSample(ctx, db, broker, processes, ids, observations); err != nil {
+			stopSamples()
+			return nil, err
+		}
 		stopSamples()
 		batch := <-sampleResult
 		if batch.Err != nil {
@@ -266,20 +312,22 @@ func measure(ctx context.Context, db *durable.DB, bin, seed string, warmup, coun
 		if index == 0 {
 			continue
 		}
-		rows, err := db.SQL.QueryContext(ctx, "SELECT extract(epoch FROM (completed_at-accepted_at))*1000, GREATEST(attempts-1,0), duplicates FROM durable_jobs WHERE id=ANY($1) ORDER BY id", ids)
+		rows, err := db.SQL.QueryContext(ctx, "SELECT GREATEST(attempts-1,0), duplicates FROM durable_jobs WHERE id=ANY($1) ORDER BY id", ids)
 		if err != nil {
 			return nil, err
 		}
-		var latencies []float64
+		latencies, err := observations.Latencies(ids)
+		if err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
 		var retries, duplicates int64
 		for rows.Next() {
-			var latency float64
 			var retry, duplicate int64
-			if err := rows.Scan(&latency, &retry, &duplicate); err != nil {
+			if err := rows.Scan(&retry, &duplicate); err != nil {
 				_ = rows.Close()
 				return nil, err
 			}
-			latencies = append(latencies, latency)
 			retries += retry
 			duplicates += duplicate
 		}
@@ -291,7 +339,7 @@ func measure(ctx context.Context, db *durable.DB, bin, seed string, warmup, coun
 		if len(latencies) != n {
 			return nil, errors.New("missing durable latency samples")
 		}
-		values = append(values, trial{Workers: workers, Trial: index, Jobs: n, DurationSeconds: duration, Throughput: float64(n) / duration, P50MS: percentile(latencies, .5), P95MS: percentile(latencies, .95), P99MS: percentile(latencies, .99), Retries: retries, Duplicates: duplicates, LatencyMS: latencies, Samples: batch.Samples})
+		values = append(values, trial{Workers: workers, Trial: index, DatabaseSchema: schema, Jobs: n, DurationSeconds: duration, Throughput: float64(n) / duration, P50MS: percentile(latencies, .5), P95MS: percentile(latencies, .95), P99MS: percentile(latencies, .99), Retries: retries, Duplicates: duplicates, LatencyMS: latencies, Samples: batch.Samples})
 	}
 	return values, nil
 }
@@ -301,10 +349,10 @@ type sampleBatch struct {
 	Err     error
 }
 
-func collectSamples(ctx context.Context, db *durable.DB, broker *durable.Broker, processes []*exec.Cmd, ids []string, initial sample) sampleBatch {
+func collectSamples(ctx context.Context, db *durable.DB, broker *durable.Broker, processes []*exec.Cmd, ids []string, initial sample, observations *observation) sampleBatch {
 	samples := []sample{initial}
 	for {
-		value, err := captureSample(ctx, db, broker, processes, ids)
+		value, err := captureSample(ctx, db, broker, processes, ids, observations)
 		if err != nil {
 			if ctx.Err() != nil {
 				return sampleBatch{Samples: samples}
@@ -320,11 +368,26 @@ func collectSamples(ctx context.Context, db *durable.DB, broker *durable.Broker,
 	}
 }
 
-func captureSample(ctx context.Context, db *durable.DB, broker *durable.Broker, processes []*exec.Cmd, ids []string) (sample, error) {
-	var completed int
-	if err := db.SQL.QueryRowContext(ctx, "SELECT count(*) FROM durable_jobs WHERE id=ANY($1) AND status='completed'", ids).Scan(&completed); err != nil {
+func captureSample(ctx context.Context, db *durable.DB, broker *durable.Broker, processes []*exec.Cmd, ids []string, observations *observation) (sample, error) {
+	rows, err := db.SQL.QueryContext(ctx, "SELECT j.id FROM durable_jobs j JOIN durable_results r ON r.job_id=j.id WHERE j.id=ANY($1) AND j.status='completed'", ids)
+	if err != nil {
 		return sample{}, err
 	}
+	var completedIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return sample{}, err
+		}
+		completedIDs = append(completedIDs, id)
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return sample{}, err
+	}
+	observations.Observe(completedIDs, time.Now())
 	ready, dead, err := broker.Depth()
 	if err != nil {
 		return sample{}, err
@@ -333,7 +396,7 @@ func captureSample(ctx context.Context, db *durable.DB, broker *durable.Broker, 
 	if err != nil {
 		return sample{}, err
 	}
-	return sample{At: time.Now().UTC(), Completed: completed, QueueReady: ready, DeadReady: dead, RSSKiB: rss, CPUPercent: cpu}, nil
+	return sample{At: time.Now().UTC(), Completed: len(completedIDs), QueueReady: ready, DeadReady: dead, RSSKiB: rss, CPUPercent: cpu}, nil
 }
 
 func resources(processes []*exec.Cmd) (int64, float64, error) {
@@ -341,29 +404,90 @@ func resources(processes []*exec.Cmd) (int64, float64, error) {
 	for _, command := range processes {
 		ids = append(ids, strconv.Itoa(command.Process.Pid))
 	}
-	output, err := exec.Command("ps", "-o", "rss=,pcpu=", "-p", strings.Join(ids, ",")).Output()
+	output, err := exec.Command("ps", "-o", "pid=,stat=,rss=,pcpu=", "-p", strings.Join(ids, ",")).Output()
 	if err != nil {
 		return 0, 0, err
 	}
+	return parseResources(string(output), ids)
+}
+
+func parseResources(output string, ids []string) (int64, float64, error) {
+	expected := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		expected[id] = false
+	}
 	var rss int64
 	var cpu float64
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) != 2 {
+		if len(fields) != 4 {
 			return 0, 0, errors.New("unexpected ps resource output")
 		}
-		r, err := strconv.ParseInt(fields[0], 10, 64)
+		seen, exists := expected[fields[0]]
+		if !exists || seen {
+			return 0, 0, errors.New("unexpected or duplicate process PID")
+		}
+		expected[fields[0]] = true
+		if strings.ContainsAny(fields[1], "ZX") {
+			return 0, 0, errors.New("benchmark process exited unexpectedly")
+		}
+		r, err := strconv.ParseInt(fields[2], 10, 64)
 		if err != nil {
 			return 0, 0, err
 		}
-		c, err := strconv.ParseFloat(fields[1], 64)
+		c, err := strconv.ParseFloat(fields[3], 64)
 		if err != nil {
 			return 0, 0, err
 		}
 		rss += r
 		cpu += c
 	}
+	for id, seen := range expected {
+		if !seen {
+			return 0, 0, fmt.Errorf("benchmark process %s missing from resource sample", id)
+		}
+	}
 	return rss, cpu, nil
+}
+
+type observation struct {
+	mu        sync.Mutex
+	started   map[string]time.Time
+	latencies map[string]float64
+}
+
+func newObservations() *observation {
+	return &observation{started: make(map[string]time.Time), latencies: make(map[string]float64)}
+}
+func (o *observation) Start(id string, at time.Time) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.started[id] = at
+}
+func (o *observation) Observe(ids []string, at time.Time) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, id := range ids {
+		if _, seen := o.latencies[id]; seen {
+			continue
+		}
+		if start, exists := o.started[id]; exists {
+			o.latencies[id] = at.Sub(start).Seconds() * 1000
+		}
+	}
+}
+func (o *observation) Latencies(ids []string) ([]float64, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	values := make([]float64, 0, len(ids))
+	for _, id := range ids {
+		value, ok := o.latencies[id]
+		if !ok {
+			return nil, fmt.Errorf("committed result for %s was not observed", id)
+		}
+		values = append(values, value)
+	}
+	return values, nil
 }
 
 func percentile(values []float64, p float64) float64 {

@@ -26,17 +26,62 @@ func Connect(ctx context.Context, url, name string, consume bool) (*Broker, erro
 		return nil, errors.New("queue name required")
 	}
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	connection, err := amqp.DialConfig(url, amqp.Config{Heartbeat: 5 * time.Second, Dial: func(network, address string) (net.Conn, error) { return dialer.DialContext(ctx, network, address) }})
+	setupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	deadline, _ := setupCtx.Deadline()
+	var socket net.Conn
+	var stopCancellation func() bool
+	cancellationDone := make(chan struct{})
+	connection, err := amqp.DialConfig(url, amqp.Config{Heartbeat: 5 * time.Second, Dial: func(network, address string) (net.Conn, error) {
+		conn, err := dialer.DialContext(setupCtx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		if err := conn.SetDeadline(deadline); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		socket = conn
+		// DialConfig's protocol handshake and synchronous topology RPCs do not
+		// accept a context. Closing their socket makes cancellation effective.
+		stopCancellation = context.AfterFunc(setupCtx, func() { _ = conn.Close(); close(cancellationDone) })
+		return conn, nil
+	}})
+	defer func() {
+		if stopCancellation != nil {
+			stopCancellation()
+		}
+	}()
 	if err != nil {
+		if setupCtx.Err() != nil {
+			return nil, setupCtx.Err()
+		}
+		return nil, err
+	}
+	// The AMQP library clears socket deadlines after its handshake. Reapply
+	// ours through channel/topology configuration, with cancellation still bound.
+	if err := socket.SetDeadline(deadline); err != nil {
+		_ = connection.CloseDeadline(time.Now().Add(time.Second))
 		return nil, err
 	}
 	b := &Broker{connection: connection, name: name}
 	b.channel, err = connection.Channel()
 	if err != nil {
-		_ = connection.Close()
+		_ = connection.CloseDeadline(time.Now().Add(time.Second))
 		return nil, err
 	}
 	if err := b.configure(consume); err != nil {
+		_ = b.Close()
+		return nil, err
+	}
+	if !stopCancellation() {
+		<-cancellationDone
+	}
+	if err := setupCtx.Err(); err != nil {
+		_ = b.Close()
+		return nil, err
+	}
+	if err := socket.SetDeadline(time.Time{}); err != nil {
 		_ = b.Close()
 		return nil, err
 	}
@@ -126,4 +171,8 @@ func (b *Broker) Depth() (ready, dead int, errorValue error) {
 	return q.Messages, dq.Messages, err
 }
 
-func (b *Broker) Close() error { return errors.Join(b.channel.Close(), b.connection.Close()) }
+func (b *Broker) Close() error {
+	// Connection close also closes its channels. Closing the channel first can
+	// wait indefinitely for a peer which stopped responding.
+	return b.connection.CloseDeadline(time.Now().Add(time.Second))
+}

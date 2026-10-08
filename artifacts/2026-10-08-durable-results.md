@@ -1,5 +1,11 @@
 # Local durable-backend evidence, 8 October 2026
 
+This is the **preserved pre-fix snapshot** for source `581883c`. Its latency
+fields use SQL timestamps assigned before the respective transactions commit;
+they omit commit/fsync delay and are not observed end-to-end result latencies.
+The raw JSON is unchanged for provenance. Use the v2 report for the corrected
+client-observed committed-result metric and connection-startup reliability fix.
+
 Source: `581883c986fc847343bebe0b8954ee421c6fb0fd`, clean worktree at both
 measurement starts. Go 1.26.4, Darwin/arm64, 11 logical CPUs; PostgreSQL and
 RabbitMQ ran in the isolated Docker Desktop `ajay-durable-20261008` project.
@@ -15,7 +21,7 @@ processes; 100 warmup jobs, then three 1,000-job trials. Every group uses the sa
 count was zero. No validation retries or duplicate notifications occurred in
 the normal-load benchmark.
 
-| Workers | Trial | Jobs/s | p50 ms | p95 ms | p99 ms |
+| Workers | Trial | Jobs/s | SQL interval p50 ms | SQL interval p95 ms | SQL interval p99 ms |
 |---:|---:|---:|---:|---:|---:|
 | 1 | 1 | 232.77 | 27.427 | 44.401 | 57.566 |
 | 1 | 2 | 204.55 | 27.858 | 46.586 | 54.305 |
@@ -31,8 +37,8 @@ the normal-load benchmark.
 | 8 | 3 | 151.41 | 23.424 | 33.420 | 48.969 |
 
 Raw evidence: [all latencies and continuous samples](2026-10-08-durable-benchmark.json).
-No sample or slower configuration has been removed. Acceptance-to-commit
-latency uses PostgreSQL timestamps. Throughput includes HTTP producer time and
+No sample or slower configuration has been removed. This pre-fix SQL timestamp
+interval uses PostgreSQL timestamps assigned before commit. Throughput includes HTTP producer time and
 completion polling. The sample stream begins before submission and continues
 through enqueue and drain, approximately every 50 ms.
 

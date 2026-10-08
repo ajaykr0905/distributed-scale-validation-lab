@@ -66,7 +66,12 @@ A SQL or context failure rolls back the attempt and result. The worker requeues
 and pauses 250 ms; infrastructure outages do not consume validation attempts.
 There is no guarantee of progress while a dependency is unavailable. Dispatcher
 and worker processes reconnect after broker loss, redeclaring topology. Their
-10-second operation timeout bounds a stalled transaction; one-second reconnect
+10-second operation timeout bounds a stalled transaction. Connection startup
+binds cancellation and a maximum five-second deadline to its socket through
+TCP, AMQP handshake, and topology setup. The socket is closed on cancellation;
+the deadline is cleared only after successful setup. Connection shutdown uses
+a one-second close deadline instead of an unbounded channel-close RPC.
+One-second reconnect
 spacing prevents an unbounded busy loop.
 
 ## Accounting, shutdown, and limits

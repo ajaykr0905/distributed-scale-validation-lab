@@ -20,18 +20,29 @@ The harness launches a separate submission API, outbox dispatcher, and 1, 2, 4,
 or 8 independent worker processes. Each group gets an unmeasured warmup followed
 by three measured trials, all with the same seeded endpoints. Idempotency keys
 are unique per trial so every measured job is actually executed.
+Each worker-count group starts with its own empty PostgreSQL schema, so
+previous groups' retained job history does not change its admission-scan cost.
+The schema name is recorded in each trial and retained for inspection.
 
-It records every acceptance-to-result-commit latency, throughput (including
+It records every HTTP-submit-start-to-observed-committed-result latency, throughput (including
 HTTP submission and polling), p50/p95/p99, ready/dead queue samples, retries,
 duplicates, and aggregate API/dispatcher/worker RSS and CPU samples. Percentiles
-use the floor of `(n-1)*p` over sorted samples; raw latencies retain job-ID order.
-Measurements use the application's PostgreSQL clock for acceptance and commit.
+use the floor of `(n-1)*p` over sorted samples; raw latencies retain fixture order.
+Latencies use the benchmark client's monotonic clock, immediately before HTTP
+POST through the first query observing a committed completed-job/result join.
+Observation polling runs approximately every 50 ms plus SQL, resource sampling,
+and scheduling time; reported latency includes that overhead. There is no fixed
+maximum observation-delay guarantee under load. The `completed_at` SQL update
+timestamp is not used as a commit timestamp, because it precedes commit/fsync.
 RSS/CPU comes from `ps` and excludes broker/database/Docker-VM resources. The
 CPU percentage is a process-lifetime average, not interval utilization. Samples
 start before acceptance and continue across enqueue and drain at approximately
 50 ms intervals; sampling may miss brief peaks. The report inspects only the
 named Compose project's two service containers and records their actual image
 references and immutable local image IDs. The
+resource snapshot requires every expected PID exactly once and rejects missing
+or zombie/dead processes; worker death fails the run instead of silently
+reporting fewer workers. The
 single sequential producer and per-event dispatcher confirms can bottleneck the
 run; increased worker count need not increase throughput.
 
@@ -48,6 +59,11 @@ after the independent processes exit gracefully.
 
 Each trial uses a distinct queue; named PostgreSQL history and RabbitMQ topology
 remain available for inspection. Stop the isolated Compose project afterwards.
+
+The original `2026-10-08-durable-benchmark.json` is retained byte-for-byte as
+pre-fix evidence for clean source `581883c`. Its latency fields are a pre-commit
+SQL timestamp interval and must not be presented as committed-result end-to-end
+latency. Use the versioned v2 report for the observed-result measurement above.
 
 ## Original unit-level worker benchmark
 
