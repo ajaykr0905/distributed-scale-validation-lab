@@ -39,3 +39,12 @@ repeated headers return 400, even if repeated values match. The existing key
 validation still requires 1–128 printable ASCII characters without spaces.
 A comma in a single value remains a literal character in that key; the server
 does not split or normalize keys before validation and submission.
+
+## Run cancellation
+
+A run request with an already canceled context returns 408; an expired deadline
+returns 504. Neither starts an experiment nor changes run/failure counters.
+Cancellation is checked again after body parsing. Cancellation or deadline
+errors during execution, including wrapped errors, use the same status codes
+and public messages; those attempted executions count as failed runs. Existing
+run option validation errors continue to return 422.

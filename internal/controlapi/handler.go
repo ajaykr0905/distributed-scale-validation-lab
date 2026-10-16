@@ -1,6 +1,7 @@
 package controlapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,10 +16,17 @@ type Handler struct {
 	runs      atomic.Uint64
 	failures  atomic.Uint64
 	processed atomic.Uint64
+	execute   runFunc
 }
 
+type runFunc func(context.Context, runner.Options) (runner.Summary, error)
+
 func New() http.Handler {
-	handler := &Handler{}
+	return newHandler(runner.Run)
+}
+
+func newHandler(execute runFunc) http.Handler {
+	handler := &Handler{execute: execute}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handler.health)
 	mux.HandleFunc("GET /metrics", handler.metrics)
@@ -31,6 +39,10 @@ func (h *Handler) health(response http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) run(response http.ResponseWriter, request *http.Request) {
+	if err := request.Context().Err(); err != nil {
+		writeRunError(response, err)
+		return
+	}
 	if !supportedJSON(request) {
 		writeJSON(response, http.StatusUnsupportedMediaType, map[string]string{"error": "expected uncompressed application/json with UTF-8 encoding"})
 		return
@@ -52,15 +64,30 @@ func (h *Handler) run(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	summary, err := runner.Run(request.Context(), *options)
+	if err := request.Context().Err(); err != nil {
+		writeRunError(response, err)
+		return
+	}
+	summary, err := h.execute(request.Context(), *options)
 	h.runs.Add(1)
 	if err != nil {
 		h.failures.Add(1)
-		writeJSON(response, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		writeRunError(response, err)
 		return
 	}
 	h.processed.Add(uint64(summary.Stored))
 	writeJSON(response, http.StatusOK, summary)
+}
+
+func writeRunError(response http.ResponseWriter, err error) {
+	status, message := http.StatusUnprocessableEntity, err.Error()
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		status, message = http.StatusGatewayTimeout, "run deadline exceeded"
+	case errors.Is(err, context.Canceled):
+		status, message = http.StatusRequestTimeout, "request canceled"
+	}
+	writeJSON(response, status, map[string]string{"error": message})
 }
 
 func writeRequestError(response http.ResponseWriter, err error, message string) {
