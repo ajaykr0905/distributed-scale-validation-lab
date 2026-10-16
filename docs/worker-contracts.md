@@ -53,3 +53,11 @@ Durable processing rejects negative retry delay before opening a transaction.
 Positive delays round up to milliseconds without overflowing, so small positive
 delays cannot silently become immediate retries. Terminal failure notifications
 are available immediately rather than waiting for the next-retry delay.
+
+Persisted validator errors are valid UTF-8 without NUL bytes, capped at 512 bytes
+on a character boundary. Arbitrary validator error text cannot prevent the failure
+transition solely because PostgreSQL rejects its encoding.
+
+The transaction regression fixtures exercise SQL decisions without external
+services. They do not verify PostgreSQL lock behavior, RabbitMQ routing, or crash
+recovery; those remain the separately gated service integration tests.

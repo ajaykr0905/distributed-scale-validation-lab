@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/model"
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/validator"
@@ -25,6 +27,19 @@ func retryMilliseconds(delay time.Duration) int64 {
 	// Round positive delays up so sub-millisecond values cannot become a hot
 	// retry loop. Subtract first to avoid overflow for the largest duration.
 	return int64((delay-1)/time.Millisecond) + 1
+}
+
+func failureMessage(cause error) string {
+	// PostgreSQL text requires valid UTF-8 and cannot contain NUL bytes. Keep
+	// the existing 512-byte limit without splitting the final rune.
+	message := strings.ToValidUTF8(strings.ReplaceAll(cause.Error(), "\x00", "\uFFFD"), "\uFFFD")
+	if len(message) > 512 {
+		message = message[:512]
+		for !utf8.ValidString(message) {
+			message = message[:len(message)-1]
+		}
+	}
+	return message
 }
 
 func validateEvent(event Event) error {
@@ -135,10 +150,7 @@ func (d *DB) Process(ctx context.Context, event Event, v validator.Validator, re
 			status, destination, nextAttempt = "failed", "dead", event.Attempt
 			delayMS = 0
 		}
-		message := validationErr.Error()
-		if len(message) > 512 {
-			message = message[:512]
-		}
+		message := failureMessage(validationErr)
 		_, err = tx.ExecContext(ctx, `UPDATE durable_jobs SET status=$2,attempts=$3,updated_at=clock_timestamp(),
  completed_at=CASE WHEN $2='failed' THEN clock_timestamp() ELSE NULL END,last_error=$4 WHERE id=$1`, event.JobID, status, event.Attempt, message)
 		if err == nil {

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/model"
 )
@@ -207,6 +208,33 @@ func TestProcessSchedulesRetriesWithoutTruncationOrOverflow(t *testing.T) {
 			outbox := f.executions[1]
 			if outbox.args[1].Value != wantAttempt || outbox.args[2].Value != wantDestination || outbox.args[3].Value != wantDelay {
 				t.Fatalf("delay=%s maxAttempts=%d outbox=%+v", tc.delay, maxAttempts, outbox)
+			}
+		}
+	}
+}
+
+func TestProcessFailureTextRemainsSafeForPostgres(t *testing.T) {
+	for _, tc := range []struct{ message, want string }{
+		{"short failure", "short failure"},
+		{strings.Repeat("x", 600), strings.Repeat("x", 512)},
+		{strings.Repeat("x", 511) + "é", strings.Repeat("x", 511)},
+		{strings.Repeat("界", 200), strings.Repeat("界", 170)},
+		{"bad\x00text\xff", "bad\uFFFDtext\uFFFD"},
+	} {
+		for _, maxAttempts := range []int{1, 3} {
+			db, f := newProcessFixture(t, maxAttempts)
+			v := processValidator(func(context.Context, model.Endpoint) (model.ValidationResult, error) {
+				return model.ValidationResult{}, errors.New(tc.message)
+			})
+			if err := db.Process(context.Background(), Event{JobID: strings.Repeat("a", 64), Attempt: 1}, v, 0, Hooks{}); err != nil {
+				t.Fatal(err)
+			}
+			if f.commits != 1 || len(f.executions) != 2 {
+				t.Fatalf("fixture=%+v", f)
+			}
+			message, ok := f.executions[0].args[3].Value.(string)
+			if !ok || message != tc.want || len(message) > 512 || !utf8.ValidString(message) || strings.ContainsRune(message, 0) {
+				t.Fatalf("stored unsafe error: %q want %q", message, tc.want)
 			}
 		}
 	}
