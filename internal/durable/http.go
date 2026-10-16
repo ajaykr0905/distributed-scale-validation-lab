@@ -49,7 +49,13 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 			respond(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
+		if contextError(w, r.Context().Err()) {
+			return
+		}
 		job, created, err := repository.Submit(r.Context(), key, endpoint, maxAttempts, capacity)
+		if contextError(w, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, ErrConflict):
 			respond(w, 409, map[string]string{"error": err.Error()})
@@ -74,6 +80,9 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 			return
 		}
 		job, err := repository.Get(r.Context(), id)
+		if contextError(w, err) {
+			return
+		}
 		if errors.Is(err, ErrNotFound) {
 			respond(w, 404, map[string]string{"error": "job not found"})
 			return
@@ -86,6 +95,9 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := repository.Counts(r.Context()); err != nil {
+			if contextError(w, err) {
+				return
+			}
 			respond(w, 503, map[string]string{"status": "database unavailable"})
 			return
 		}
@@ -93,6 +105,9 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 	})
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		c, err := repository.Counts(r.Context())
+		if contextError(w, err) {
+			return
+		}
 		if err != nil {
 			respond(w, 503, map[string]string{"error": "database temporarily unavailable"})
 			return
@@ -107,10 +122,27 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 			_, _ = fmt.Fprintf(w, "# TYPE scale_lab_jobs_%s gauge\nscale_lab_jobs_%s %d\n", metric.name, metric.name, metric.value)
 		}
 	})
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if contextError(w, r.Context().Err()) {
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 var jobID = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+func contextError(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		respond(w, http.StatusGatewayTimeout, map[string]string{"error": "database operation deadline exceeded; retry submissions with the same key"})
+	case errors.Is(err, context.Canceled):
+		respond(w, http.StatusRequestTimeout, map[string]string{"error": "request canceled; retry submissions with the same key"})
+	default:
+		return false
+	}
+	return true
+}
 
 func supportedJSON(r *http.Request) bool {
 	contentTypes := r.Header.Values("Content-Type")

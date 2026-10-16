@@ -3,11 +3,14 @@ package durable
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/model"
 )
@@ -138,6 +141,131 @@ func TestHTTPRequiresOneIdempotencyKey(t *testing.T) {
 			}
 			if tc.code == 202 && (repository.calls != 1 || repository.key != tc.values[0]) {
 				t.Fatalf("calls=%d submitted key=%q", repository.calls, repository.key)
+			}
+		})
+	}
+}
+
+type contextRepository struct {
+	check func(context.Context) error
+	calls int
+}
+
+func (r *contextRepository) Submit(ctx context.Context, _ string, _ model.Endpoint, _, _ int) (Job, bool, error) {
+	r.calls++
+	return Job{ID: strings.Repeat("a", 64), Status: "pending"}, true, r.check(ctx)
+}
+
+func (r *contextRepository) Get(ctx context.Context, _ string) (Job, error) {
+	r.calls++
+	return Job{Status: "completed"}, r.check(ctx)
+}
+
+func (r *contextRepository) Counts(ctx context.Context) (Counts, error) {
+	r.calls++
+	return Counts{}, r.check(ctx)
+}
+
+func durableRequests(t *testing.T) []*http.Request {
+	t.Helper()
+	return []*http.Request{
+		jobRequest(endpointJSON(t)),
+		httptest.NewRequest(http.MethodGet, "/api/v1/jobs/"+strings.Repeat("a", 64), nil),
+		httptest.NewRequest(http.MethodGet, "/healthz", nil),
+		httptest.NewRequest(http.MethodGet, "/metrics", nil),
+	}
+}
+
+func TestHTTPClassifiesRepositoryContextErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code int
+	}{
+		{"cancel", context.Canceled, 408},
+		{"deadline", context.DeadlineExceeded, 504},
+		{"wrapped cancel", fmt.Errorf("private details: %w", context.Canceled), 408},
+		{"wrapped deadline", fmt.Errorf("private details: %w", context.DeadlineExceeded), 504},
+		{"unavailable", errors.New("private details"), 503},
+	} {
+		for _, request := range durableRequests(t) {
+			t.Run(tc.name+request.URL.Path, func(t *testing.T) {
+				repository := &contextRepository{check: func(context.Context) error { return tc.err }}
+				response := httptest.NewRecorder()
+				HTTP(repository, 3, 100).ServeHTTP(response, request)
+				if response.Code != tc.code || strings.Contains(response.Body.String(), "private details") || repository.calls != 1 {
+					t.Fatalf("status=%d want=%d calls=%d body=%s", response.Code, tc.code, repository.calls, response.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestHTTPRejectsFinishedContextBeforeRepository(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		for _, request := range durableRequests(t) {
+			t.Run(fmt.Sprintf("expired=%t%s", expired, request.URL.Path), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				code := http.StatusRequestTimeout
+				if expired {
+					cancel()
+					ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+					code = http.StatusGatewayTimeout
+				} else {
+					cancel()
+				}
+				defer cancel()
+				repository := &contextRepository{check: func(context.Context) error { return nil }}
+				response := httptest.NewRecorder()
+				HTTP(repository, 3, 100).ServeHTTP(response, request.WithContext(ctx))
+				if response.Code != code || repository.calls != 0 {
+					t.Fatalf("status=%d want=%d calls=%d", response.Code, code, repository.calls)
+				}
+			})
+		}
+	}
+}
+
+type cancelOnEOFReader struct {
+	reader io.Reader
+	cancel context.CancelFunc
+}
+
+func (r *cancelOnEOFReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if err == io.EOF {
+		r.cancel()
+	}
+	return n, err
+}
+
+func TestHTTPRechecksCancellationAfterBody(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := jobRequest(endpointJSON(t)).WithContext(ctx)
+	request.Body = io.NopCloser(&cancelOnEOFReader{reader: strings.NewReader(endpointJSON(t)), cancel: cancel})
+	repository := &contextRepository{check: func(context.Context) error { return nil }}
+	response := httptest.NewRecorder()
+	HTTP(repository, 3, 100).ServeHTTP(response, request)
+	if response.Code != http.StatusRequestTimeout || repository.calls != 0 {
+		t.Fatalf("status=%d calls=%d body=%s", response.Code, repository.calls, response.Body.String())
+	}
+}
+
+func TestHTTPSuccessSurvivesCancellationAtRepositoryReturn(t *testing.T) {
+	for _, request := range durableRequests(t) {
+		t.Run(request.URL.Path, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			repository := &contextRepository{check: func(context.Context) error { cancel(); return nil }}
+			response := httptest.NewRecorder()
+			HTTP(repository, 3, 100).ServeHTTP(response, request.WithContext(ctx))
+			code := http.StatusOK
+			if request.Method == http.MethodPost {
+				code = http.StatusAccepted
+			}
+			if response.Code != code || repository.calls != 1 {
+				t.Fatalf("successful result lost: status=%d calls=%d body=%s", response.Code, repository.calls, response.Body.String())
 			}
 		})
 	}

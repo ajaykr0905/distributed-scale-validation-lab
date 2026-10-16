@@ -48,3 +48,13 @@ Cancellation is checked again after body parsing. Cancellation or deadline
 errors during execution, including wrapped errors, use the same status codes
 and public messages; those attempted executions count as failed runs. Existing
 run option validation errors continue to return 422.
+
+## Repository cancellation
+
+Durable endpoints also reject already canceled requests with 408 and expired
+deadlines with 504 before accessing the repository. Submission rechecks after
+body parsing. Repository errors wrapping cancellation or deadline errors use
+the same codes without exposing backend details. Other repository failures
+remain 503. A timeout or disconnect can leave commit outcome uncertain; retry a
+submission with its original key. A successful repository result is retained
+even if cancellation races with its return.
