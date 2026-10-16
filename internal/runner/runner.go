@@ -32,10 +32,13 @@ type Summary struct {
 }
 
 func Run(ctx context.Context, options Options) (Summary, error) {
+	if err := ctx.Err(); err != nil {
+		return Summary{}, err
+	}
 	if options.Seed == "" {
 		options.Seed = "public-demo"
 	}
-	if options.Count < 1 || options.Count > 100_000 {
+	if options.Count < 1 || options.Count > generator.MaxCount {
 		return Summary{}, fmt.Errorf("count must be between 1 and 100000")
 	}
 	if options.Workers < 1 || options.Workers > 128 {
@@ -45,7 +48,7 @@ func Run(ctx context.Context, options Options) (Summary, error) {
 		return Summary{}, fmt.Errorf("max attempts must be between 1 and 10")
 	}
 
-	endpoints, err := generator.Generate(options.Seed, options.Count)
+	endpoints, err := generator.GenerateContext(ctx, options.Seed, options.Count)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -91,6 +94,9 @@ func Run(ctx context.Context, options Options) (Summary, error) {
 	case err := <-errCh:
 		return Summary{}, err
 	default:
+	}
+	if err := ctx.Err(); err != nil {
+		return Summary{}, err
 	}
 
 	return Summary{

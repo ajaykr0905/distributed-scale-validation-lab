@@ -37,3 +37,8 @@ Successful validator output must name the input endpoint and include nonblank
 status and fingerprint plus a nonzero checked time. Both worker paths treat
 malformed output as validation failure and apply their normal bounded retry/dead
 letter policy. They cannot persist or acknowledge it as successful work.
+
+Dataset generation is bounded to 100,000 endpoints and accepts a context. Existing
+Generate callers retain deterministic output. Canceled generation returns no
+partial dataset. Runner cancellation covers generation, publication, and worker
+completion; canceled runs return an error and no success summary.
