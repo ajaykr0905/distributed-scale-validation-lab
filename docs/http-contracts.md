@@ -75,3 +75,12 @@ become a negatively cached polling result. GET routes also support HEAD through
 Go's HTTP server: the response retains its status, JSON or Prometheus content
 type, and cache policy, and sends no body. Metrics use
 `text/plain; version=0.0.4`; JSON responses use `application/json`.
+
+## Run admission
+
+Each control handler admits at most two concurrent experiments. Additional valid
+requests fail immediately with 429 and `Retry-After: 1`, without an unbounded
+waiting queue or changes to run/failure/result counters. Body validation and
+context checks happen before admission. Slots are released on success, error,
+or cancellation. Health and metrics probes remain available while runs are
+busy. Admission is per handler instance, not a cross-process quota.

@@ -17,6 +17,7 @@ type Handler struct {
 	failures  atomic.Uint64
 	processed atomic.Uint64
 	execute   runFunc
+	active    chan struct{}
 }
 
 type runFunc func(context.Context, runner.Options) (runner.Summary, error)
@@ -26,7 +27,7 @@ func New() http.Handler {
 }
 
 func newHandler(execute runFunc) http.Handler {
-	handler := &Handler{execute: execute}
+	handler := &Handler{execute: execute, active: make(chan struct{}, 2)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handler.health)
 	mux.HandleFunc("GET /metrics", handler.metrics)
@@ -69,6 +70,14 @@ func (h *Handler) run(response http.ResponseWriter, request *http.Request) {
 
 	if err := request.Context().Err(); err != nil {
 		writeRunError(response, err)
+		return
+	}
+	select {
+	case h.active <- struct{}{}:
+		defer func() { <-h.active }()
+	default:
+		response.Header().Set("Retry-After", "1")
+		writeJSON(response, http.StatusTooManyRequests, map[string]string{"error": "too many runs in progress; retry later"})
 		return
 	}
 	summary, err := h.execute(request.Context(), *options)
