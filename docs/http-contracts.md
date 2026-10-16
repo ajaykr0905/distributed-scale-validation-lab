@@ -65,3 +65,13 @@ Wrapped or joined idempotency conflicts and capacity errors return only the
 public sentinel message, with 409 and 429 respectively. Internal wrapper text
 is never copied to the response. Capacity responses retain `Retry-After: 1`;
 failed submissions do not advertise a job `Location`.
+
+## Freshness and HEAD
+
+Both APIs send `Cache-Control: no-store` on every response, including errors,
+unknown routes, and method rejections. Job state, readiness, and metrics must
+not be served from a stale intermediary cache; a missing job's 404 must not
+become a negatively cached polling result. GET routes also support HEAD through
+Go's HTTP server: the response retains its status, JSON or Prometheus content
+type, and cache policy, and sends no body. Metrics use
+`text/plain; version=0.0.4`; JSON responses use `application/json`.

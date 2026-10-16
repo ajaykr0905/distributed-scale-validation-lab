@@ -31,7 +31,10 @@ func newHandler(execute runFunc) http.Handler {
 	mux.HandleFunc("GET /healthz", handler.health)
 	mux.HandleFunc("GET /metrics", handler.metrics)
 	mux.HandleFunc("POST /api/v1/runs", handler.run)
-	return mux
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Cache-Control", "no-store")
+		mux.ServeHTTP(response, request)
+	})
 }
 
 func (h *Handler) health(response http.ResponseWriter, _ *http.Request) {

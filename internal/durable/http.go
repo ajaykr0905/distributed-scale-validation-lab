@@ -123,6 +123,7 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 		}
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		if contextError(w, r.Context().Err()) {
 			return
 		}
