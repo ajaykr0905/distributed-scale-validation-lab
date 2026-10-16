@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/model"
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/validator"
@@ -14,6 +16,37 @@ import (
 
 type Publisher interface {
 	Publish(context.Context, string, Event) error
+}
+
+var ErrInvalidRetryDelay = errors.New("retry delay must not be negative")
+
+func retryMilliseconds(delay time.Duration) int64 {
+	if delay == 0 {
+		return 0
+	}
+	// Round positive delays up so sub-millisecond values cannot become a hot
+	// retry loop. Subtract first to avoid overflow for the largest duration.
+	return int64((delay-1)/time.Millisecond) + 1
+}
+
+func failureMessage(cause error) string {
+	// PostgreSQL text requires valid UTF-8 and cannot contain NUL bytes. Keep
+	// the existing 512-byte limit without splitting the final rune.
+	message := strings.ToValidUTF8(strings.ReplaceAll(cause.Error(), "\x00", "\uFFFD"), "\uFFFD")
+	if len(message) > 512 {
+		message = message[:512]
+		for !utf8.ValidString(message) {
+			message = message[:len(message)-1]
+		}
+	}
+	return message
+}
+
+func validateEvent(event Event) error {
+	if !jobID.MatchString(event.JobID) || event.Attempt < 1 || event.Attempt > 10 {
+		return ErrInvalidEvent
+	}
+	return nil
 }
 
 type Hooks struct {
@@ -58,8 +91,11 @@ func (d *DB) DispatchOne(ctx context.Context, p Publisher, hooks Hooks) (bool, e
 // Process commits all state transitions before the caller acknowledges delivery.
 // Transient SQL failures roll back and must be requeued by the transport.
 func (d *DB) Process(ctx context.Context, event Event, v validator.Validator, retryDelay time.Duration, hooks Hooks) error {
-	if !jobID.MatchString(event.JobID) || event.Attempt < 1 {
-		return ErrInvalidEvent
+	if err := validateEvent(event); err != nil {
+		return err
+	}
+	if retryDelay < 0 {
+		return ErrInvalidRetryDelay
 	}
 	tx, err := d.SQL.BeginTx(ctx, nil)
 	if err != nil {
@@ -76,7 +112,11 @@ func (d *DB) Process(ctx context.Context, event Event, v validator.Validator, re
 	if err != nil {
 		return err
 	}
-	if status == "completed" || status == "failed" || event.Attempt <= attempts {
+	terminal := status == "completed" || status == "failed"
+	if event.Attempt > maxAttempts || (terminal && event.Attempt > attempts) {
+		return ErrInvalidEvent
+	}
+	if terminal || event.Attempt <= attempts {
 		_, err := tx.ExecContext(ctx, "UPDATE durable_jobs SET duplicates=duplicates+1 WHERE id=$1", event.JobID)
 		if err != nil {
 			return err
@@ -92,6 +132,9 @@ func (d *DB) Process(ctx context.Context, event Event, v validator.Validator, re
 	}
 	result, validationErr := v.Validate(ctx, endpoint)
 	if validationErr == nil {
+		validationErr = validator.ValidateResult(endpoint, result)
+	}
+	if validationErr == nil {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO durable_results(job_id,endpoint_id,status,fingerprint,checked_at)
  VALUES($1,$2,$3,$4,$5) ON CONFLICT(job_id) DO NOTHING`, event.JobID, result.EndpointID, result.Status, result.Fingerprint, result.CheckedAt); err != nil {
 			return err
@@ -102,18 +145,17 @@ func (d *DB) Process(ctx context.Context, event Event, v validator.Validator, re
 			return ctx.Err()
 		}
 		status, destination, nextAttempt := "retrying", "work", event.Attempt+1
+		delayMS := retryMilliseconds(retryDelay)
 		if event.Attempt == maxAttempts {
 			status, destination, nextAttempt = "failed", "dead", event.Attempt
+			delayMS = 0
 		}
-		message := validationErr.Error()
-		if len(message) > 512 {
-			message = message[:512]
-		}
+		message := failureMessage(validationErr)
 		_, err = tx.ExecContext(ctx, `UPDATE durable_jobs SET status=$2,attempts=$3,updated_at=clock_timestamp(),
  completed_at=CASE WHEN $2='failed' THEN clock_timestamp() ELSE NULL END,last_error=$4 WHERE id=$1`, event.JobID, status, event.Attempt, message)
 		if err == nil {
 			_, err = tx.ExecContext(ctx, `INSERT INTO durable_outbox(job_id,attempt,destination,available_at)
- VALUES($1,$2,$3,clock_timestamp()+$4*interval '1 millisecond')`, event.JobID, nextAttempt, destination, retryDelay.Milliseconds())
+ VALUES($1,$2,$3,clock_timestamp()+$4*interval '1 millisecond')`, event.JobID, nextAttempt, destination, delayMS)
 		}
 	}
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -95,6 +96,9 @@ func (q *RabbitMQ) configure(queueName string) error {
 }
 
 func (q *RabbitMQ) Publish(ctx context.Context, message Message) error {
+	if err := checkAttempts(message.Attempts); err != nil {
+		return err
+	}
 	return q.publishConfirmed(ctx, q.workExchange, message, amqp.Table{
 		"x-attempts": int32(message.Attempts),
 	})
@@ -113,7 +117,12 @@ func (q *RabbitMQ) Receive(ctx context.Context) (Delivery, error) {
 }
 
 func (q *RabbitMQ) DeadLetter(ctx context.Context, message Message, cause error) error {
-	message.Attempts++
+	if err := checkAttempts(message.Attempts); err != nil {
+		return err
+	}
+	if message.Attempts < MaxAttemptCount {
+		message.Attempts++
+	}
 	return q.publishConfirmed(ctx, q.deadExchange, message, amqp.Table{
 		"x-attempts":    int32(message.Attempts),
 		"x-error-class": fmt.Sprintf("%T", cause),
@@ -155,8 +164,13 @@ func (q *RabbitMQ) Close() error {
 }
 
 type rabbitDelivery struct {
-	queue    *RabbitMQ
-	delivery amqp.Delivery
+	queue interface {
+		Publish(context.Context, Message) error
+	}
+	delivery    amqp.Delivery
+	mu          sync.Mutex
+	settled     bool
+	republished bool
 }
 
 func (d *rabbitDelivery) Message() Message {
@@ -168,19 +182,50 @@ func (d *rabbitDelivery) Message() Message {
 }
 
 func (d *rabbitDelivery) Ack() error {
-	return d.delivery.Ack(false)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.settled {
+		return ErrSettled
+	}
+	err := d.delivery.Ack(false)
+	if err == nil {
+		d.settled = true
+	}
+	return err
 }
 
 func (d *rabbitDelivery) Nack(requeue bool) error {
-	if !requeue {
-		return d.delivery.Nack(false, false)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.settled {
+		return ErrSettled
 	}
-	message := d.Message()
-	message.Attempts++
-	if err := d.queue.Publish(context.Background(), message); err != nil {
+	if !requeue && !d.republished {
+		err := d.delivery.Nack(false, false)
+		if err == nil {
+			d.settled = true
+		}
 		return err
 	}
-	return d.delivery.Ack(false)
+	if !d.republished {
+		message, err := retryMessage(d.Message())
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := d.queue.Publish(ctx, message); err != nil {
+			return err
+		}
+		d.republished = true
+	}
+	// A successful retry publication is remembered even if acknowledging the
+	// original fails, so retrying settlement cannot publish a second copy.
+	err := d.delivery.Ack(false)
+	if err == nil {
+		d.settled = true
+	}
+	return err
 }
 
 func attemptsFromHeaders(headers amqp.Table) int {
@@ -188,18 +233,23 @@ func attemptsFromHeaders(headers amqp.Table) int {
 	if !exists {
 		return 0
 	}
+	var attempts int64
 	switch typed := value.(type) {
 	case int:
-		return typed
+		attempts = int64(typed)
 	case int32:
-		return int(typed)
+		attempts = int64(typed)
 	case int64:
-		return int(typed)
+		attempts = typed
 	case int16:
-		return int(typed)
+		attempts = int64(typed)
 	case int8:
-		return int(typed)
+		attempts = int64(typed)
 	default:
-		return 0
+		return MaxAttemptCount
 	}
+	if attempts < 0 || attempts > MaxAttemptCount {
+		return MaxAttemptCount
+	}
+	return int(attempts)
 }

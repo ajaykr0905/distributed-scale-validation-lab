@@ -1,8 +1,11 @@
 package controlapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sync/atomic"
 
@@ -13,15 +16,26 @@ type Handler struct {
 	runs      atomic.Uint64
 	failures  atomic.Uint64
 	processed atomic.Uint64
+	execute   runFunc
+	active    chan struct{}
 }
 
+type runFunc func(context.Context, runner.Options) (runner.Summary, error)
+
 func New() http.Handler {
-	handler := &Handler{}
+	return newHandler(runner.Run)
+}
+
+func newHandler(execute runFunc) http.Handler {
+	handler := &Handler{execute: execute, active: make(chan struct{}, 2)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handler.health)
 	mux.HandleFunc("GET /metrics", handler.metrics)
 	mux.HandleFunc("POST /api/v1/runs", handler.run)
-	return mux
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Cache-Control", "no-store")
+		mux.ServeHTTP(response, request)
+	})
 }
 
 func (h *Handler) health(response http.ResponseWriter, _ *http.Request) {
@@ -29,24 +43,73 @@ func (h *Handler) health(response http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) run(response http.ResponseWriter, request *http.Request) {
+	if err := request.Context().Err(); err != nil {
+		writeRunError(response, err)
+		return
+	}
+	if !supportedJSON(request) {
+		writeJSON(response, http.StatusUnsupportedMediaType, map[string]string{"error": "expected uncompressed application/json with UTF-8 encoding"})
+		return
+	}
 	request.Body = http.MaxBytesReader(response, request.Body, 16<<10)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
-	options := runner.Options{Seed: "public-demo", Count: 10_000, Workers: 4, MaxAttempts: 3}
+	options := &runner.Options{Seed: "public-demo", Count: 10_000, Workers: 4, MaxAttempts: 3}
 	if err := decoder.Decode(&options); err != nil {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid run request"})
+		writeRequestError(response, err, "invalid run request")
+		return
+	}
+	if options == nil {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "run options must be a JSON object"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeRequestError(response, err, "exactly one JSON run request is required")
 		return
 	}
 
-	summary, err := runner.Run(request.Context(), options)
+	if err := request.Context().Err(); err != nil {
+		writeRunError(response, err)
+		return
+	}
+	select {
+	case h.active <- struct{}{}:
+		defer func() { <-h.active }()
+	default:
+		response.Header().Set("Retry-After", "1")
+		writeJSON(response, http.StatusTooManyRequests, map[string]string{"error": "too many runs in progress; retry later"})
+		return
+	}
+	summary, err := h.execute(request.Context(), *options)
 	h.runs.Add(1)
 	if err != nil {
 		h.failures.Add(1)
-		writeJSON(response, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		writeRunError(response, err)
 		return
 	}
 	h.processed.Add(uint64(summary.Stored))
 	writeJSON(response, http.StatusOK, summary)
+}
+
+func writeRunError(response http.ResponseWriter, err error) {
+	status, message := http.StatusUnprocessableEntity, err.Error()
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		status, message = http.StatusGatewayTimeout, "run deadline exceeded"
+	case errors.Is(err, context.Canceled):
+		status, message = http.StatusRequestTimeout, "request canceled"
+	}
+	writeJSON(response, status, map[string]string{"error": message})
+}
+
+func writeRequestError(response http.ResponseWriter, err error, message string) {
+	status := http.StatusBadRequest
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		status = http.StatusRequestEntityTooLarge
+		message = "request body exceeds 16 KiB"
+	}
+	writeJSON(response, status, map[string]string{"error": message})
 }
 
 func (h *Handler) metrics(response http.ResponseWriter, _ *http.Request) {
