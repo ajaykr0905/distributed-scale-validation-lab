@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/model"
@@ -17,8 +18,29 @@ type Basic struct {
 	Now func() time.Time
 }
 
+// ValidateEndpoint checks the minimum domain contract shared by queue workers
+// and validators. Vocabulary values remain extensible for synthetic datasets.
+func ValidateEndpoint(endpoint model.Endpoint) error {
+	for _, field := range []struct{ name, value string }{
+		{"id", endpoint.ID}, {"tenant_id", endpoint.TenantID},
+		{"region", endpoint.Region}, {"platform", endpoint.Platform},
+		{"expected_version", endpoint.ExpectedVersion},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("endpoint %s is required", field.name)
+		}
+	}
+	if endpoint.Sequence < 0 {
+		return fmt.Errorf("endpoint sequence must be nonnegative")
+	}
+	return nil
+}
+
 func (v Basic) Validate(ctx context.Context, endpoint model.Endpoint) (model.ValidationResult, error) {
 	if err := ctx.Err(); err != nil {
+		return model.ValidationResult{}, err
+	}
+	if err := ValidateEndpoint(endpoint); err != nil {
 		return model.ValidationResult{}, err
 	}
 	now := time.Now

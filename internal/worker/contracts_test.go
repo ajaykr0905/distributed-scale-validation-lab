@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -90,5 +91,55 @@ func TestAckFailureAfterPersistenceRetainsResultForDeduplication(t *testing.T) {
 	d.ackErr = nil
 	if result, err := w.ProcessOne(context.Background()); err != nil || result.Inserted {
 		t.Fatalf("redelivery=%+v error=%v", result, err)
+	}
+}
+
+func TestPoisonMessagesAreDeadLetteredWithoutValidationOrStorage(t *testing.T) {
+	valid := testMessage(t, "valid")
+	for _, payload := range []string{`{`, `null`, `{}`, `[]`, `{"id":"partial"}`, string(valid.Payload) + ` {}`, string(valid.Payload[:len(valid.Payload)-1]) + `,"unknown":true}`} {
+		t.Run(payload, func(t *testing.T) {
+			d := &recordingDelivery{message: queue.Message{ID: "poison", Payload: []byte(payload)}}
+			q := &recordingSink{oneDeliveryQueue: oneDeliveryQueue{delivery: d}}
+			s := store.NewMemory()
+			v := &controlledValidator{}
+			if _, err := New(q, s, v).ProcessOne(context.Background()); err == nil {
+				t.Fatal("accepted poison message")
+			}
+			if v.calls != 0 || s.Len() != 0 || q.calls != 1 || len(d.nacks) != 1 || d.nacks[0] {
+				t.Fatalf("validator=%d stored=%d sink=%d delivery=%+v", v.calls, s.Len(), q.calls, d)
+			}
+		})
+	}
+	valid.ID = " "
+	d := &recordingDelivery{message: valid}
+	v := &controlledValidator{}
+	if _, err := New(oneDeliveryQueue{delivery: d}, store.NewMemory(), v).ProcessOne(context.Background()); err == nil || v.calls != 0 {
+		t.Fatalf("missing identity: %v", err)
+	}
+}
+
+func TestNegativeEndpointSequenceIsPoison(t *testing.T) {
+	message := testMessage(t, "negative")
+	var endpoint model.Endpoint
+	if err := json.Unmarshal(message.Payload, &endpoint); err != nil {
+		t.Fatal(err)
+	}
+	endpoint.Sequence = -1
+	message.Payload, _ = json.Marshal(endpoint)
+	d := &recordingDelivery{message: message}
+	v := &controlledValidator{}
+	if _, err := New(oneDeliveryQueue{delivery: d}, store.NewMemory(), v).ProcessOne(context.Background()); err == nil || v.calls != 0 || len(d.nacks) != 1 || d.nacks[0] {
+		t.Fatalf("error=%v calls=%d delivery=%+v", err, v.calls, d)
+	}
+}
+
+func TestExhaustedRedeliveryDoesNotRunValidatorAgain(t *testing.T) {
+	message := testMessage(t, "exhausted")
+	message.Attempts = 3
+	d := &recordingDelivery{message: message}
+	v := &controlledValidator{}
+	q := &recordingSink{oneDeliveryQueue: oneDeliveryQueue{delivery: d}}
+	if _, err := New(q, store.NewMemory(), v).ProcessOne(context.Background()); err == nil || v.calls != 0 || q.calls != 1 {
+		t.Fatalf("error=%v validator=%d sink=%d", err, v.calls, q.calls)
 	}
 }

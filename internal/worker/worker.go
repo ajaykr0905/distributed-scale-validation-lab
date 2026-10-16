@@ -1,10 +1,13 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/model"
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/queue"
@@ -50,13 +53,24 @@ func (w *Worker) ProcessOne(ctx context.Context) (ProcessResult, error) {
 		return ProcessResult{}, fmt.Errorf("receive: %w", err)
 	}
 	message := delivery.Message()
+	if strings.TrimSpace(message.ID) == "" {
+		return ProcessResult{}, w.reject(ctx, delivery, message, errors.New("message ID is required"))
+	}
+	if message.Attempts >= w.maxAttempts {
+		return ProcessResult{}, w.reject(ctx, delivery, message, errors.New("message retry budget exhausted"))
+	}
 
 	var endpoint model.Endpoint
-	if err := json.Unmarshal(message.Payload, &endpoint); err != nil {
-		return ProcessResult{}, errors.Join(
-			fmt.Errorf("decode message %q: %w", message.ID, err),
-			delivery.Nack(false),
-		)
+	decoder := json.NewDecoder(bytes.NewReader(message.Payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&endpoint); err != nil {
+		return ProcessResult{}, w.reject(ctx, delivery, message, fmt.Errorf("decode message %q: %w", message.ID, err))
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return ProcessResult{}, w.reject(ctx, delivery, message, fmt.Errorf("message %q must contain one endpoint", message.ID))
+	}
+	if err := validator.ValidateEndpoint(endpoint); err != nil {
+		return ProcessResult{}, w.reject(ctx, delivery, message, fmt.Errorf("message %q: %w", message.ID, err))
 	}
 
 	result, err := w.validator.Validate(ctx, endpoint)
@@ -84,7 +98,13 @@ func (w *Worker) settleFailure(ctx context.Context, delivery queue.Delivery, mes
 	if message.Attempts >= 0 && message.Attempts < w.maxAttempts-1 {
 		return errors.Join(cause, delivery.Nack(true))
 	}
+	return w.reject(ctx, delivery, message, cause)
+}
 
+func (w *Worker) reject(ctx context.Context, delivery queue.Delivery, message queue.Message, cause error) error {
+	if err := ctx.Err(); err != nil {
+		return errors.Join(cause, err, delivery.Nack(true))
+	}
 	if sink, ok := w.queue.(queue.DeadLetterSink); ok {
 		if err := sink.DeadLetter(ctx, message, cause); err != nil {
 			// The transfer has not succeeded. Preserve the original for a later

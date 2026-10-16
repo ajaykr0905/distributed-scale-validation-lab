@@ -26,3 +26,9 @@ A worker discards an exhausted original only after a configured dead-letter sink
 accepts its copy. Transfer failure requeues the original and returns both errors.
 Cancellation also requeues rather than dead-lettering a job. A failed acknowledgment
 after persistence leaves the stored result available to deduplicate redelivery.
+
+Queue payloads contain exactly one endpoint JSON object with known fields. Message
+IDs and endpoint identity, tenant, region, platform, and version must be nonblank;
+sequence must be nonnegative. Poison input is dead-lettered without validation or
+storage. Exhausted redeliveries attempt dead-letter transfer without validating
+again. The basic validator enforces the same endpoint requirements for direct callers.
