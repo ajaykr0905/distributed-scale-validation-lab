@@ -21,3 +21,13 @@ while checking for a second value. Exactly 16 KiB is permitted. This also applie
 to streamed bodies without a known content length. Syntax errors found before
 the size limit still return 400; the server does not drain malformed input just
 to classify its total length.
+
+## Body representation
+
+An omitted `Content-Type` remains supported for existing clients, including the
+benchmark. When supplied, it must be a single valid `application/json` media
+type, with absent or UTF-8 charset. Multiple values, malformed types, other media
+types, and other charsets return 415. Media type and charset casing is ignored.
+Bodies must be uncompressed; absent, empty, or `identity` content encoding is
+supported. Other or multiple content encodings return 415 before execution or
+database admission.

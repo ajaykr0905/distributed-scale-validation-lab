@@ -55,3 +55,40 @@ func TestHTTPBodySizeStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPRepresentationHeaders(t *testing.T) {
+	body := endpointJSON(t)
+	for _, tc := range []struct {
+		name   string
+		header http.Header
+		code   int
+	}{
+		{"omitted", nil, 202},
+		{"json", http.Header{"Content-Type": {"application/json"}}, 202},
+		{"utf8", http.Header{"Content-Type": {"Application/JSON; charset=UTF-8"}}, 202},
+		{"identity", http.Header{"Content-Encoding": {"identity"}}, 202},
+		{"text", http.Header{"Content-Type": {"text/plain"}}, 415},
+		{"malformed", http.Header{"Content-Type": {"application/json; charset"}}, 415},
+		{"empty", http.Header{"Content-Type": {""}}, 415},
+		{"other charset", http.Header{"Content-Type": {"application/json; charset=utf-16"}}, 415},
+		{"duplicate", http.Header{"Content-Type": {"application/json", "text/plain"}}, 415},
+		{"gzip", http.Header{"Content-Encoding": {"gzip"}}, 415},
+		{"encoding list", http.Header{"Content-Encoding": {"identity", "gzip"}}, 415},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repository := &fakeRepository{created: true}
+			request := jobRequest(body)
+			for name, values := range tc.header {
+				request.Header[name] = values
+			}
+			response := httptest.NewRecorder()
+			HTTP(repository, 3, 100).ServeHTTP(response, request)
+			if response.Code != tc.code {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, tc.code, response.Body.String())
+			}
+			if tc.code == 415 && repository.calls != 0 {
+				t.Fatalf("unsupported representation reached repository %d times", repository.calls)
+			}
+		})
+	}
+}

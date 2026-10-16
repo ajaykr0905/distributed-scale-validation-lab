@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/model"
 )
@@ -21,6 +23,10 @@ type Repository interface {
 func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		if !supportedJSON(r) {
+			respond(w, http.StatusUnsupportedMediaType, map[string]string{"error": "expected uncompressed application/json with UTF-8 encoding"})
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 		decoder := json.NewDecoder(r.Body)
 		decoder.DisallowUnknownFields()
@@ -99,6 +105,25 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 }
 
 var jobID = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+func supportedJSON(r *http.Request) bool {
+	contentTypes := r.Header.Values("Content-Type")
+	if len(contentTypes) > 1 {
+		return false
+	}
+	if len(contentTypes) == 1 {
+		mediaType, params, err := mime.ParseMediaType(contentTypes[0])
+		if err != nil || mediaType != "application/json" {
+			return false
+		}
+		if charset, ok := params["charset"]; ok && !strings.EqualFold(charset, "utf-8") {
+			return false
+		}
+	}
+	encodings := r.Header.Values("Content-Encoding")
+	return len(encodings) == 0 || (len(encodings) == 1 &&
+		(strings.TrimSpace(encodings[0]) == "" || strings.EqualFold(strings.TrimSpace(encodings[0]), "identity")))
+}
 
 func requestError(w http.ResponseWriter, err error, message string) {
 	status := http.StatusBadRequest

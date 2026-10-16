@@ -31,6 +31,10 @@ func (h *Handler) health(response http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) run(response http.ResponseWriter, request *http.Request) {
+	if !supportedJSON(request) {
+		writeJSON(response, http.StatusUnsupportedMediaType, map[string]string{"error": "expected uncompressed application/json with UTF-8 encoding"})
+		return
+	}
 	request.Body = http.MaxBytesReader(response, request.Body, 16<<10)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
