@@ -21,3 +21,8 @@ RabbitMQ retry headers count as exhausted rather than resetting the retry budget
 Requeue refuses counter overflow without settling the original; dead-letter
 accounting saturates at the maximum. Worker budget comparisons do not add to
 untrusted counters.
+
+A worker discards an exhausted original only after a configured dead-letter sink
+accepts its copy. Transfer failure requeues the original and returns both errors.
+Cancellation also requeues rather than dead-lettering a job. A failed acknowledgment
+after persistence leaves the stored result available to deduplicate redelivery.

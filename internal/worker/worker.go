@@ -78,13 +78,19 @@ func (w *Worker) ProcessOne(ctx context.Context) (ProcessResult, error) {
 }
 
 func (w *Worker) settleFailure(ctx context.Context, delivery queue.Delivery, message queue.Message, cause error) error {
+	if err := ctx.Err(); err != nil {
+		return errors.Join(cause, err, delivery.Nack(true))
+	}
 	if message.Attempts >= 0 && message.Attempts < w.maxAttempts-1 {
 		return errors.Join(cause, delivery.Nack(true))
 	}
 
-	var deadLetterErr error
 	if sink, ok := w.queue.(queue.DeadLetterSink); ok {
-		deadLetterErr = sink.DeadLetter(ctx, message, cause)
+		if err := sink.DeadLetter(ctx, message, cause); err != nil {
+			// The transfer has not succeeded. Preserve the original for a later
+			// dead-letter attempt rather than dropping the only durable copy.
+			return errors.Join(cause, err, delivery.Nack(true))
+		}
 	}
-	return errors.Join(cause, deadLetterErr, delivery.Nack(false))
+	return errors.Join(cause, delivery.Nack(false))
 }
