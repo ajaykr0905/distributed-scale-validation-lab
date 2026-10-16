@@ -3,6 +3,7 @@ package controlapi
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync/atomic"
 
@@ -35,6 +36,10 @@ func (h *Handler) run(response http.ResponseWriter, request *http.Request) {
 	options := runner.Options{Seed: "public-demo", Count: 10_000, Workers: 4, MaxAttempts: 3}
 	if err := decoder.Decode(&options); err != nil {
 		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid run request"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "exactly one JSON run request is required"})
 		return
 	}
 

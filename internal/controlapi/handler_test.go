@@ -45,3 +45,27 @@ func TestRejectsUnsafeRunSize(t *testing.T) {
 		t.Fatalf("expected validation failure, got %d", response.Code)
 	}
 }
+
+func TestRunRequiresExactlyOneJSONValue(t *testing.T) {
+	for _, suffix := range []string{` {}`, ` null`, ` garbage`, ` {`} {
+		t.Run(suffix, func(t *testing.T) {
+			handler := New()
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/runs", strings.NewReader(`{"count":1}`+suffix))
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			metrics := httptest.NewRecorder()
+			handler.ServeHTTP(metrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			if !strings.Contains(metrics.Body.String(), "scale_lab_runs_total 0\n") {
+				t.Fatalf("invalid request executed a run: %s", metrics.Body.String())
+			}
+		})
+	}
+	response := httptest.NewRecorder()
+	New().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/runs", strings.NewReader("{\"count\":1} \n\t")))
+	if response.Code != http.StatusOK {
+		t.Fatalf("trailing whitespace rejected: %d %s", response.Code, response.Body.String())
+	}
+}
