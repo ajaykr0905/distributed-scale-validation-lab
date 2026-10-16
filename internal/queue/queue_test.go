@@ -121,3 +121,30 @@ func TestMemoryCanceledOperationsDoNotChangeReadyQueue(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryAttemptBoundsCannotWrapOrSettleFailedRetry(t *testing.T) {
+	q := NewMemory(1)
+	if err := q.Publish(context.Background(), Message{Attempts: -1}); !errors.Is(err, ErrInvalidAttempts) {
+		t.Fatalf("publish: %v", err)
+	}
+	message := Message{ID: "exhausted", Attempts: MaxAttemptCount}
+	if err := q.Publish(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	d, err := q.Receive(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Nack(true); !errors.Is(err, ErrInvalidAttempts) {
+		t.Fatalf("requeue: %v", err)
+	}
+	if err := d.Nack(false); err != nil {
+		t.Fatalf("failed requeue settled delivery: %v", err)
+	}
+	if err := q.DeadLetter(context.Background(), message, errors.New("exhausted")); err != nil {
+		t.Fatal(err)
+	}
+	if got := q.DeadLetters()[0].Message.Attempts; got != MaxAttemptCount {
+		t.Fatalf("wrapped attempts: %d", got)
+	}
+}

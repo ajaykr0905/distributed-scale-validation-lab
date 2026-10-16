@@ -78,7 +78,7 @@ func (w *Worker) ProcessOne(ctx context.Context) (ProcessResult, error) {
 }
 
 func (w *Worker) settleFailure(ctx context.Context, delivery queue.Delivery, message queue.Message, cause error) error {
-	if message.Attempts+1 < w.maxAttempts {
+	if message.Attempts >= 0 && message.Attempts < w.maxAttempts-1 {
 		return errors.Join(cause, delivery.Nack(true))
 	}
 

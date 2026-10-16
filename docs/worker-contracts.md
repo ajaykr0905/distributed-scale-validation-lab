@@ -15,3 +15,9 @@ broker commands leave settlement retryable. Once a retry publication is confirme
 an acknowledgment retry does not republish it. Retry publication has a ten-second
 deadline. Transport failures can still produce duplicates across reconnects, so
 stores must remain idempotent by message ID.
+
+Attempt counters are nonnegative signed 32-bit values across adapters. Invalid
+RabbitMQ retry headers count as exhausted rather than resetting the retry budget.
+Requeue refuses counter overflow without settling the original; dead-letter
+accounting saturates at the maximum. Worker budget comparisons do not add to
+untrusted counters.

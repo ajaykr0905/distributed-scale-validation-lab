@@ -105,10 +105,31 @@ func TestAttemptsFromRabbitHeaders(t *testing.T) {
 	}{
 		{value: int32(2), want: 2},
 		{value: int64(4), want: 4},
-		{value: "invalid", want: 0},
+		{value: "invalid", want: MaxAttemptCount},
+		{value: int32(-1), want: MaxAttemptCount},
+		{value: int64(1 << 40), want: MaxAttemptCount},
+		{value: int8(1), want: 1},
+		{value: int16(3), want: 3},
+		{value: int(5), want: 5},
 	} {
 		if got := attemptsFromHeaders(amqp.Table{"x-attempts": test.value}); got != test.want {
 			t.Fatalf("attempt header %v: got %d want %d", test.value, got, test.want)
 		}
+	}
+}
+
+func TestRabbitPublishRejectsUnrepresentableAttemptsBeforeIO(t *testing.T) {
+	q := &RabbitMQ{}
+	for _, attempts := range []int{-1, MaxAttemptCount + 1} {
+		message := Message{Attempts: attempts}
+		if err := q.Publish(context.Background(), message); !errors.Is(err, ErrInvalidAttempts) {
+			t.Fatalf("publish: %v", err)
+		}
+		if err := q.DeadLetter(context.Background(), message, errors.New("failure")); !errors.Is(err, ErrInvalidAttempts) {
+			t.Fatalf("dead letter: %v", err)
+		}
+	}
+	if attemptsFromHeaders(nil) != 0 {
+		t.Fatal("absent header must represent first attempt")
 	}
 }

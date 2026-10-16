@@ -3,12 +3,32 @@ package queue
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 var ErrSettled = errors.New("delivery already settled")
+var ErrInvalidAttempts = errors.New("attempt count must fit a nonnegative AMQP int32")
+
+const MaxAttemptCount = math.MaxInt32
+
+func checkAttempts(attempts int) error {
+	if attempts < 0 || attempts > MaxAttemptCount {
+		return ErrInvalidAttempts
+	}
+	return nil
+}
+
+func retryMessage(message Message) (Message, error) {
+	if err := checkAttempts(message.Attempts); err != nil || message.Attempts == MaxAttemptCount {
+		return Message{}, ErrInvalidAttempts
+	}
+	retry := clone(message)
+	retry.Attempts++
+	return retry, nil
+}
 
 type Message struct {
 	ID       string
@@ -60,6 +80,9 @@ func NewMemory(capacity int) *Memory {
 
 func (q *Memory) Publish(ctx context.Context, message Message) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := checkAttempts(message.Attempts); err != nil {
 		return err
 	}
 	select {
@@ -119,7 +142,12 @@ func (q *Memory) DeadLetter(ctx context.Context, message Message, cause error) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	message.Attempts++
+	if err := checkAttempts(message.Attempts); err != nil {
+		return err
+	}
+	if message.Attempts < MaxAttemptCount {
+		message.Attempts++
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -160,14 +188,23 @@ func (d *memoryDelivery) Ack() error {
 }
 
 func (d *memoryDelivery) Nack(requeue bool) error {
+	if d.settled.Load() {
+		return ErrSettled
+	}
+	var retry Message
+	if requeue {
+		var err error
+		retry, err = retryMessage(d.message)
+		if err != nil {
+			return err
+		}
+	}
 	if !d.settled.CompareAndSwap(false, true) {
 		return ErrSettled
 	}
 	if !requeue {
 		return nil
 	}
-	retry := clone(d.message)
-	retry.Attempts++
 	d.queue.requeue(retry)
 	return nil
 }

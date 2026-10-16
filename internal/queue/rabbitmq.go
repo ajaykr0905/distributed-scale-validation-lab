@@ -96,6 +96,9 @@ func (q *RabbitMQ) configure(queueName string) error {
 }
 
 func (q *RabbitMQ) Publish(ctx context.Context, message Message) error {
+	if err := checkAttempts(message.Attempts); err != nil {
+		return err
+	}
 	return q.publishConfirmed(ctx, q.workExchange, message, amqp.Table{
 		"x-attempts": int32(message.Attempts),
 	})
@@ -114,7 +117,12 @@ func (q *RabbitMQ) Receive(ctx context.Context) (Delivery, error) {
 }
 
 func (q *RabbitMQ) DeadLetter(ctx context.Context, message Message, cause error) error {
-	message.Attempts++
+	if err := checkAttempts(message.Attempts); err != nil {
+		return err
+	}
+	if message.Attempts < MaxAttemptCount {
+		message.Attempts++
+	}
 	return q.publishConfirmed(ctx, q.deadExchange, message, amqp.Table{
 		"x-attempts":    int32(message.Attempts),
 		"x-error-class": fmt.Sprintf("%T", cause),
@@ -200,8 +208,10 @@ func (d *rabbitDelivery) Nack(requeue bool) error {
 		return err
 	}
 	if !d.republished {
-		message := d.Message()
-		message.Attempts++
+		message, err := retryMessage(d.Message())
+		if err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := d.queue.Publish(ctx, message); err != nil {
@@ -223,18 +233,23 @@ func attemptsFromHeaders(headers amqp.Table) int {
 	if !exists {
 		return 0
 	}
+	var attempts int64
 	switch typed := value.(type) {
 	case int:
-		return typed
+		attempts = int64(typed)
 	case int32:
-		return int(typed)
+		attempts = int64(typed)
 	case int64:
-		return int(typed)
+		attempts = typed
 	case int16:
-		return int(typed)
+		attempts = int64(typed)
 	case int8:
-		return int(typed)
+		attempts = int64(typed)
 	default:
-		return 0
+		return MaxAttemptCount
 	}
+	if attempts < 0 || attempts > MaxAttemptCount {
+		return MaxAttemptCount
+	}
+	return int(attempts)
 }
