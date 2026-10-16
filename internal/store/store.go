@@ -24,9 +24,15 @@ func NewMemory() *Memory {
 	return &Memory{results: make(map[string]model.ValidationResult)}
 }
 
-func (s *Memory) PutIfAbsent(_ context.Context, result model.ValidationResult) (bool, error) {
+func (s *Memory) PutIfAbsent(ctx context.Context, result model.ValidationResult) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if _, exists := s.results[result.MessageID]; exists {
 		return false, nil
 	}

@@ -59,6 +59,9 @@ func NewMemory(capacity int) *Memory {
 }
 
 func (q *Memory) Publish(ctx context.Context, message Message) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -69,6 +72,9 @@ func (q *Memory) Publish(ctx context.Context, message Message) error {
 
 func (q *Memory) Receive(ctx context.Context) (Delivery, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		q.mu.Lock()
 		if len(q.retries) > 0 {
 			message := q.retries[0]
@@ -116,6 +122,9 @@ func (q *Memory) DeadLetter(ctx context.Context, message Message, cause error) e
 	message.Attempts++
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	q.deadLetters = append(q.deadLetters, DeadLetter{
 		Message:   clone(message),
 		Reason:    cause.Error(),

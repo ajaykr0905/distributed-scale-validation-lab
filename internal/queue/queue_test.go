@@ -97,3 +97,27 @@ func TestMemoryRetryWakeupPropagatesToWaitingReceivers(t *testing.T) {
 		t.Fatal("remaining retries did not wake another receiver")
 	}
 }
+
+func TestMemoryCanceledOperationsDoNotChangeReadyQueue(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 100 {
+		q := NewMemory(2)
+		if err := q.Publish(ctx, Message{ID: "canceled"}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("publish: %v", err)
+		}
+		if err := q.Publish(context.Background(), Message{ID: "buffered"}); err != nil {
+			t.Fatal(err)
+		}
+		q.requeue(Message{ID: "retry"})
+		if _, err := q.Receive(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("receive: %v", err)
+		}
+		if len(q.messages) != 1 || len(q.retries) != 1 {
+			t.Fatal("canceled operation consumed ready work")
+		}
+		if err := q.DeadLetter(ctx, Message{}, errors.New("failure")); !errors.Is(err, context.Canceled) || len(q.DeadLetters()) != 0 {
+			t.Fatalf("dead letter: %v", err)
+		}
+	}
+}
