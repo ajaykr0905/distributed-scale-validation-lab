@@ -58,10 +58,10 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 		}
 		switch {
 		case errors.Is(err, ErrConflict):
-			respond(w, 409, map[string]string{"error": err.Error()})
+			respond(w, 409, map[string]string{"error": ErrConflict.Error()})
 		case errors.Is(err, ErrFull):
 			w.Header().Set("Retry-After", "1")
-			respond(w, 429, map[string]string{"error": err.Error()})
+			respond(w, 429, map[string]string{"error": ErrFull.Error()})
 		case err != nil:
 			respond(w, 503, map[string]string{"error": "database temporarily unavailable; retry with the same key"})
 		default:

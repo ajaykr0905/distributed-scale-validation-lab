@@ -58,3 +58,10 @@ the same codes without exposing backend details. Other repository failures
 remain 503. A timeout or disconnect can leave commit outcome uncertain; retry a
 submission with its original key. A successful repository result is retained
 even if cancellation races with its return.
+
+## Public admission errors
+
+Wrapped or joined idempotency conflicts and capacity errors return only the
+public sentinel message, with 409 and 429 respectively. Internal wrapper text
+is never copied to the response. Capacity responses retain `Retry-After: 1`;
+failed submissions do not advertise a job `Location`.

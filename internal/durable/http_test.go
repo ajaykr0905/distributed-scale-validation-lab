@@ -270,3 +270,35 @@ func TestHTTPSuccessSurvivesCancellationAtRepositoryReturn(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPAdmissionErrorsDoNotExposeWrappedDetails(t *testing.T) {
+	for _, sentinel := range []error{ErrConflict, ErrFull} {
+		for _, wrapped := range []error{
+			fmt.Errorf("private query and connection details: %w", sentinel),
+			errors.Join(sentinel, errors.New("private query and connection details")),
+		} {
+			t.Run(wrapped.Error(), func(t *testing.T) {
+				repository := &fakeRepository{err: wrapped}
+				response := httptest.NewRecorder()
+				HTTP(repository, 3, 100).ServeHTTP(response, jobRequest(endpointJSON(t)))
+				code := http.StatusConflict
+				if sentinel == ErrFull {
+					code = http.StatusTooManyRequests
+					if response.Header().Get("Retry-After") != "1" {
+						t.Fatal("missing capacity retry hint")
+					}
+				}
+				var payload map[string]string
+				if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+					t.Fatal(err)
+				}
+				if response.Code != code || payload["error"] != sentinel.Error() || repository.calls != 1 {
+					t.Fatalf("status=%d body=%s calls=%d", response.Code, response.Body.String(), repository.calls)
+				}
+				if response.Header().Get("Location") != "" {
+					t.Fatal("failed submission advertised a job location")
+				}
+			})
+		}
+	}
+}
