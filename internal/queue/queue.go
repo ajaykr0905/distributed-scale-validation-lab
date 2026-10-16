@@ -47,13 +47,15 @@ type Memory struct {
 	messages    chan Message
 	mu          sync.RWMutex
 	deadLetters []DeadLetter
+	retries     []Message
+	retryReady  chan struct{}
 }
 
 func NewMemory(capacity int) *Memory {
 	if capacity < 1 {
 		capacity = 1
 	}
-	return &Memory{messages: make(chan Message, capacity)}
+	return &Memory{messages: make(chan Message, capacity), retryReady: make(chan struct{}, 1)}
 }
 
 func (q *Memory) Publish(ctx context.Context, message Message) error {
@@ -66,11 +68,44 @@ func (q *Memory) Publish(ctx context.Context, message Message) error {
 }
 
 func (q *Memory) Receive(ctx context.Context) (Delivery, error) {
+	for {
+		q.mu.Lock()
+		if len(q.retries) > 0 {
+			message := q.retries[0]
+			q.retries[0] = Message{}
+			q.retries = q.retries[1:]
+			more := len(q.retries) > 0
+			q.mu.Unlock()
+			if more {
+				q.notifyRetry()
+			}
+			return &memoryDelivery{queue: q, message: message}, nil
+		}
+		q.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-q.retryReady:
+			// A retry may have been taken by another receiver. Check again.
+		case message := <-q.messages:
+			return &memoryDelivery{queue: q, message: message}, nil
+		}
+	}
+}
+
+// Requeue owns an already accepted message; it must not wait for publisher
+// capacity, which another publisher may have filled while it was in flight.
+func (q *Memory) requeue(message Message) {
+	q.mu.Lock()
+	q.retries = append(q.retries, message)
+	q.mu.Unlock()
+	q.notifyRetry()
+}
+
+func (q *Memory) notifyRetry() {
 	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case message := <-q.messages:
-		return &memoryDelivery{queue: q, message: message}, nil
+	case q.retryReady <- struct{}{}:
+	default:
 	}
 }
 
@@ -124,7 +159,8 @@ func (d *memoryDelivery) Nack(requeue bool) error {
 	}
 	retry := clone(d.message)
 	retry.Attempts++
-	return d.queue.Publish(context.Background(), retry)
+	d.queue.requeue(retry)
+	return nil
 }
 
 func clone(message Message) Message {
