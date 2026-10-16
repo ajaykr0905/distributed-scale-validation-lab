@@ -16,6 +16,17 @@ type Publisher interface {
 	Publish(context.Context, string, Event) error
 }
 
+var ErrInvalidRetryDelay = errors.New("retry delay must not be negative")
+
+func retryMilliseconds(delay time.Duration) int64 {
+	if delay == 0 {
+		return 0
+	}
+	// Round positive delays up so sub-millisecond values cannot become a hot
+	// retry loop. Subtract first to avoid overflow for the largest duration.
+	return int64((delay-1)/time.Millisecond) + 1
+}
+
 func validateEvent(event Event) error {
 	if !jobID.MatchString(event.JobID) || event.Attempt < 1 || event.Attempt > 10 {
 		return ErrInvalidEvent
@@ -68,6 +79,9 @@ func (d *DB) Process(ctx context.Context, event Event, v validator.Validator, re
 	if err := validateEvent(event); err != nil {
 		return err
 	}
+	if retryDelay < 0 {
+		return ErrInvalidRetryDelay
+	}
 	tx, err := d.SQL.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -116,8 +130,10 @@ func (d *DB) Process(ctx context.Context, event Event, v validator.Validator, re
 			return ctx.Err()
 		}
 		status, destination, nextAttempt := "retrying", "work", event.Attempt+1
+		delayMS := retryMilliseconds(retryDelay)
 		if event.Attempt == maxAttempts {
 			status, destination, nextAttempt = "failed", "dead", event.Attempt
+			delayMS = 0
 		}
 		message := validationErr.Error()
 		if len(message) > 512 {
@@ -127,7 +143,7 @@ func (d *DB) Process(ctx context.Context, event Event, v validator.Validator, re
  completed_at=CASE WHEN $2='failed' THEN clock_timestamp() ELSE NULL END,last_error=$4 WHERE id=$1`, event.JobID, status, event.Attempt, message)
 		if err == nil {
 			_, err = tx.ExecContext(ctx, `INSERT INTO durable_outbox(job_id,attempt,destination,available_at)
- VALUES($1,$2,$3,clock_timestamp()+$4*interval '1 millisecond')`, event.JobID, nextAttempt, destination, retryDelay.Milliseconds())
+ VALUES($1,$2,$3,clock_timestamp()+$4*interval '1 millisecond')`, event.JobID, nextAttempt, destination, delayMS)
 		}
 	}
 	if err != nil {

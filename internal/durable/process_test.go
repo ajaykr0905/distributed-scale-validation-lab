@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/model"
 )
@@ -166,6 +167,47 @@ func TestProcessRejectsImpossibleAttemptsBeforeDuplicateAccounting(t *testing.T)
 		}
 		if calls != 0 {
 			t.Fatal("duplicate/invalid event invoked validator")
+		}
+	}
+}
+
+func TestProcessRejectsNegativeRetryDelayBeforeDatabaseAccess(t *testing.T) {
+	db := &DB{}
+	for _, delay := range []time.Duration{-time.Nanosecond, -time.Second, time.Duration(math.MinInt64)} {
+		err := db.Process(context.Background(), Event{JobID: strings.Repeat("a", 64), Attempt: 1}, nil, delay, Hooks{})
+		if !errors.Is(err, ErrInvalidRetryDelay) {
+			t.Fatalf("delay=%s error=%v", delay, err)
+		}
+	}
+}
+
+func TestProcessSchedulesRetriesWithoutTruncationOrOverflow(t *testing.T) {
+	for _, tc := range []struct {
+		delay time.Duration
+		want  int64
+	}{
+		{0, 0}, {time.Nanosecond, 1}, {time.Millisecond, 1}, {time.Millisecond + time.Nanosecond, 2},
+		{time.Duration(math.MaxInt64), math.MaxInt64/int64(time.Millisecond) + 1},
+	} {
+		for _, maxAttempts := range []int{1, 3} {
+			db, f := newProcessFixture(t, maxAttempts)
+			v := processValidator(func(context.Context, model.Endpoint) (model.ValidationResult, error) {
+				return model.ValidationResult{}, errors.New("retry me")
+			})
+			if err := db.Process(context.Background(), Event{JobID: strings.Repeat("a", 64), Attempt: 1}, v, tc.delay, Hooks{}); err != nil {
+				t.Fatal(err)
+			}
+			wantDelay, wantDestination, wantAttempt := tc.want, "work", int64(2)
+			if maxAttempts == 1 {
+				wantDelay, wantDestination, wantAttempt = 0, "dead", 1
+			}
+			if len(f.executions) != 2 || f.commits != 1 {
+				t.Fatalf("fixture=%+v", f)
+			}
+			outbox := f.executions[1]
+			if outbox.args[1].Value != wantAttempt || outbox.args[2].Value != wantDestination || outbox.args[3].Value != wantDelay {
+				t.Fatalf("delay=%s maxAttempts=%d outbox=%+v", tc.delay, maxAttempts, outbox)
+			}
 		}
 	}
 }

@@ -48,3 +48,8 @@ ID and an attempt in 1..10. Events beyond a job's budget or beyond its terminal
 attempt are invalid, not duplicates. Stale and terminal redeliveries of actual
 attempts increment duplicate accounting without invoking the validator. A broker
 opened without consumption rejects Receive immediately.
+
+Durable processing rejects negative retry delay before opening a transaction.
+Positive delays round up to milliseconds without overflowing, so small positive
+delays cannot silently become immediate retries. Terminal failure notifications
+are available immediately rather than waiting for the next-retry delay.
