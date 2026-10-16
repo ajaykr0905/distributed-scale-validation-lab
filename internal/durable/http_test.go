@@ -1,12 +1,15 @@
 package durable
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/model"
 )
 
 func endpointJSON(t *testing.T) string {
@@ -88,6 +91,53 @@ func TestHTTPRepresentationHeaders(t *testing.T) {
 			}
 			if tc.code == 415 && repository.calls != 0 {
 				t.Fatalf("unsupported representation reached repository %d times", repository.calls)
+			}
+		})
+	}
+}
+
+type keyRepository struct {
+	fakeRepository
+	key string
+}
+
+func (r *keyRepository) Submit(ctx context.Context, key string, endpoint model.Endpoint, attempts, capacity int) (Job, bool, error) {
+	r.key = key
+	return r.fakeRepository.Submit(ctx, key, endpoint, attempts, capacity)
+}
+
+func TestHTTPRequiresOneIdempotencyKey(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		values []string
+		code   int
+	}{
+		{"missing", nil, 400},
+		{"empty", []string{""}, 400},
+		{"same twice", []string{"key", "key"}, 400},
+		{"different", []string{"first", "second"}, 400},
+		{"empty second", []string{"key", ""}, 400},
+		{"single", []string{"one-key"}, 202},
+		{"literal comma", []string{"one,two"}, 202},
+		{"maximum length", []string{strings.Repeat("k", 128)}, 202},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repository := &keyRepository{fakeRepository: fakeRepository{created: true}}
+			request := jobRequest(endpointJSON(t))
+			request.Header.Del("Idempotency-Key")
+			for _, value := range tc.values {
+				request.Header.Add("Idempotency-Key", value)
+			}
+			response := httptest.NewRecorder()
+			HTTP(repository, 3, 100).ServeHTTP(response, request)
+			if response.Code != tc.code {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, tc.code, response.Body.String())
+			}
+			if tc.code == 400 && repository.calls != 0 {
+				t.Fatalf("ambiguous key reached repository %d times", repository.calls)
+			}
+			if tc.code == 202 && (repository.calls != 1 || repository.key != tc.values[0]) {
+				t.Fatalf("calls=%d submitted key=%q", repository.calls, repository.key)
 			}
 		})
 	}

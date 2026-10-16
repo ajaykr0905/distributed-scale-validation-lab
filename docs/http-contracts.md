@@ -31,3 +31,11 @@ types, and other charsets return 415. Media type and charset casing is ignored.
 Bodies must be uncompressed; absent, empty, or `identity` content encoding is
 supported. Other or multiple content encodings return 415 before execution or
 database admission.
+
+## Idempotency header
+
+Job submission requires exactly one `Idempotency-Key` header value. Missing or
+repeated headers return 400, even if repeated values match. The existing key
+validation still requires 1–128 printable ASCII characters without spaces.
+A comma in a single value remains a literal character in that key; the server
+does not split or normalize keys before validation and submission.

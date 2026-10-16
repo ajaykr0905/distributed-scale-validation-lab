@@ -39,11 +39,17 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 			requestError(w, err, "exactly one JSON endpoint is required")
 			return
 		}
-		if _, _, _, err := RequestIdentity(r.Header.Get("Idempotency-Key"), endpoint); err != nil {
+		keys := r.Header.Values("Idempotency-Key")
+		if len(keys) != 1 {
+			respond(w, http.StatusBadRequest, map[string]string{"error": "exactly one Idempotency-Key header is required"})
+			return
+		}
+		key := keys[0]
+		if _, _, _, err := RequestIdentity(key, endpoint); err != nil {
 			respond(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
-		job, created, err := repository.Submit(r.Context(), r.Header.Get("Idempotency-Key"), endpoint, maxAttempts, capacity)
+		job, created, err := repository.Submit(r.Context(), key, endpoint, maxAttempts, capacity)
 		switch {
 		case errors.Is(err, ErrConflict):
 			respond(w, 409, map[string]string{"error": err.Error()})
