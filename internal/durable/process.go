@@ -16,6 +16,13 @@ type Publisher interface {
 	Publish(context.Context, string, Event) error
 }
 
+func validateEvent(event Event) error {
+	if !jobID.MatchString(event.JobID) || event.Attempt < 1 || event.Attempt > 10 {
+		return ErrInvalidEvent
+	}
+	return nil
+}
+
 type Hooks struct {
 	// Hooks are injectable process fault boundaries used only by recovery tests.
 	AfterPublish func()
@@ -58,8 +65,8 @@ func (d *DB) DispatchOne(ctx context.Context, p Publisher, hooks Hooks) (bool, e
 // Process commits all state transitions before the caller acknowledges delivery.
 // Transient SQL failures roll back and must be requeued by the transport.
 func (d *DB) Process(ctx context.Context, event Event, v validator.Validator, retryDelay time.Duration, hooks Hooks) error {
-	if !jobID.MatchString(event.JobID) || event.Attempt < 1 {
-		return ErrInvalidEvent
+	if err := validateEvent(event); err != nil {
+		return err
 	}
 	tx, err := d.SQL.BeginTx(ctx, nil)
 	if err != nil {
@@ -76,7 +83,11 @@ func (d *DB) Process(ctx context.Context, event Event, v validator.Validator, re
 	if err != nil {
 		return err
 	}
-	if status == "completed" || status == "failed" || event.Attempt <= attempts {
+	terminal := status == "completed" || status == "failed"
+	if event.Attempt > maxAttempts || (terminal && event.Attempt > attempts) {
+		return ErrInvalidEvent
+	}
+	if terminal || event.Attempt <= attempts {
 		_, err := tx.ExecContext(ctx, "UPDATE durable_jobs SET duplicates=duplicates+1 WHERE id=$1", event.JobID)
 		if err != nil {
 			return err

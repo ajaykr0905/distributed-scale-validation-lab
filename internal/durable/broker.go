@@ -124,8 +124,14 @@ func (b *Broker) configure(consume bool) error {
 }
 
 func (b *Broker) Publish(ctx context.Context, destination string, event Event) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if destination != "work" && destination != "dead" {
 		return errors.New("invalid outbox destination")
+	}
+	if err := validateEvent(event); err != nil {
+		return err
 	}
 	body, err := json.Marshal(event)
 	if err != nil {
@@ -151,6 +157,12 @@ func (b *Broker) Publish(ctx context.Context, destination string, event Event) e
 }
 
 func (b *Broker) Receive(ctx context.Context) (amqp.Delivery, error) {
+	if err := ctx.Err(); err != nil {
+		return amqp.Delivery{}, err
+	}
+	if b.deliveries == nil {
+		return amqp.Delivery{}, errors.New("broker is not configured to consume")
+	}
 	select {
 	case <-ctx.Done():
 		return amqp.Delivery{}, ctx.Err()

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -123,5 +124,48 @@ func TestProcessInvalidValidatorOutputUsesFailureTransition(t *testing.T) {
 			t.Fatalf("invalid result persisted: %+v", f.executions)
 		}
 		f.mu.Unlock()
+	}
+}
+
+func TestProcessRejectsInvalidEventBeforeDatabaseAccess(t *testing.T) {
+	db := &DB{}
+	for _, event := range []Event{
+		{JobID: "invalid", Attempt: 1}, {JobID: strings.Repeat("A", 64), Attempt: 1},
+		{JobID: strings.Repeat("a", 64), Attempt: -1}, {JobID: strings.Repeat("a", 64), Attempt: 0},
+		{JobID: strings.Repeat("a", 64), Attempt: 11}, {JobID: strings.Repeat("a", 64), Attempt: math.MaxInt},
+	} {
+		if err := db.Process(context.Background(), event, nil, 0, Hooks{}); !errors.Is(err, ErrInvalidEvent) {
+			t.Fatalf("event=%+v error=%v", event, err)
+		}
+	}
+}
+
+func TestProcessRejectsImpossibleAttemptsBeforeDuplicateAccounting(t *testing.T) {
+	for _, tc := range []struct {
+		status                 string
+		attempts, eventAttempt int
+		invalid                bool
+	}{
+		{"completed", 1, 2, true}, {"failed", 3, 4, true}, {"pending", 0, 2, true},
+		{"completed", 1, 1, false}, {"failed", 3, 3, false}, {"retrying", 2, 1, false},
+	} {
+		db, f := newProcessFixture(t, 3)
+		f.status, f.attempts = tc.status, tc.attempts
+		calls := 0
+		v := processValidator(func(context.Context, model.Endpoint) (model.ValidationResult, error) {
+			calls++
+			return model.ValidationResult{}, nil
+		})
+		err := db.Process(context.Background(), Event{JobID: strings.Repeat("a", 64), Attempt: tc.eventAttempt}, v, 0, Hooks{})
+		if tc.invalid {
+			if !errors.Is(err, ErrInvalidEvent) || len(f.executions) != 0 || f.rollbacks != 1 {
+				t.Fatalf("case=%+v error=%v fixture=%+v", tc, err, f)
+			}
+		} else if err != nil || f.commits != 1 || len(f.executions) != 1 || !strings.Contains(f.executions[0].query, "duplicates=duplicates+1") {
+			t.Fatalf("case=%+v error=%v fixture=%+v", tc, err, f)
+		}
+		if calls != 0 {
+			t.Fatal("duplicate/invalid event invoked validator")
+		}
 	}
 }

@@ -2,10 +2,35 @@ package durable
 
 import (
 	"context"
+	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestBrokerRejectsInvalidOperationsBeforeNetworkAccess(t *testing.T) {
+	b := &Broker{}
+	for _, event := range []Event{{JobID: "bad", Attempt: 1}, {JobID: strings.Repeat("a", 64), Attempt: 11}} {
+		if err := b.Publish(context.Background(), "work", event); !errors.Is(err, ErrInvalidEvent) {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := b.Publish(ctx, "work", Event{JobID: strings.Repeat("a", 64), Attempt: 1}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled publish: %v", err)
+	}
+	if _, err := b.Receive(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled receive: %v", err)
+	}
+	if _, err := b.Receive(context.Background()); err == nil {
+		t.Fatal("publisher-only broker accepted Receive")
+	}
+	if err := b.Publish(context.Background(), "unknown", Event{}); err == nil {
+		t.Fatal("unknown destination accepted")
+	}
+}
 
 func TestConnectBoundsSilentAMQPHandshake(t *testing.T) {
 	for _, mode := range []string{"deadline", "cancellation"} {

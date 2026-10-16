@@ -42,3 +42,9 @@ Dataset generation is bounded to 100,000 endpoints and accepts a context. Existi
 Generate callers retain deterministic output. Canceled generation returns no
 partial dataset. Runner cancellation covers generation, publication, and worker
 completion; canceled runs return an error and no success summary.
+
+Durable broker publications and processing require a lowercase 64-digit hex job
+ID and an attempt in 1..10. Events beyond a job's budget or beyond its terminal
+attempt are invalid, not duplicates. Stale and terminal redeliveries of actual
+attempts increment duplicate accounting without invoking the validator. A broker
+opened without consumption rejects Receive immediately.
