@@ -84,3 +84,14 @@ waiting queue or changes to run/failure/result counters. Body validation and
 context checks happen before admission. Slots are released on success, error,
 or cancellation. Health and metrics probes remain available while runs are
 busy. Admission is per handler instance, not a cross-process quota.
+
+## Repository operation budget
+
+Each durable Submit, Get, and Counts operation receives a context with at most
+five seconds to complete. This bounds database pool and query waits independently
+of HTTP socket read/write timeouts. A shorter caller deadline and request
+cancellation still take precedence, and request context values are preserved.
+The derived context is canceled when the handler returns to release timer
+resources. Repository implementations must honor context cancellation, as the
+PostgreSQL implementation does through its context-aware SQL calls. Deadline
+errors return 504 under the repository cancellation contract above.

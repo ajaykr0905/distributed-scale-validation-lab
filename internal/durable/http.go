@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/model"
 )
@@ -19,6 +20,8 @@ type Repository interface {
 	Get(context.Context, string) (Job, error)
 	Counts(context.Context) (Counts, error)
 }
+
+const repositoryOperationTimeout = 5 * time.Second
 
 func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 	mux := http.NewServeMux()
@@ -52,7 +55,9 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 		if contextError(w, r.Context().Err()) {
 			return
 		}
-		job, created, err := repository.Submit(r.Context(), key, endpoint, maxAttempts, capacity)
+		ctx, cancel := context.WithTimeout(r.Context(), repositoryOperationTimeout)
+		defer cancel()
+		job, created, err := repository.Submit(ctx, key, endpoint, maxAttempts, capacity)
 		if contextError(w, err) {
 			return
 		}
@@ -79,7 +84,9 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 			respond(w, 404, map[string]string{"error": "job not found"})
 			return
 		}
-		job, err := repository.Get(r.Context(), id)
+		ctx, cancel := context.WithTimeout(r.Context(), repositoryOperationTimeout)
+		defer cancel()
+		job, err := repository.Get(ctx, id)
 		if contextError(w, err) {
 			return
 		}
@@ -94,7 +101,9 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 		respond(w, 200, job)
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if _, err := repository.Counts(r.Context()); err != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), repositoryOperationTimeout)
+		defer cancel()
+		if _, err := repository.Counts(ctx); err != nil {
 			if contextError(w, err) {
 				return
 			}
@@ -104,7 +113,9 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 		respond(w, 200, map[string]string{"status": "ready"})
 	})
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
-		c, err := repository.Counts(r.Context())
+		ctx, cancel := context.WithTimeout(r.Context(), repositoryOperationTimeout)
+		defer cancel()
+		c, err := repository.Counts(ctx)
 		if contextError(w, err) {
 			return
 		}
