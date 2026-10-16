@@ -32,3 +32,8 @@ IDs and endpoint identity, tenant, region, platform, and version must be nonblan
 sequence must be nonnegative. Poison input is dead-lettered without validation or
 storage. Exhausted redeliveries attempt dead-letter transfer without validating
 again. The basic validator enforces the same endpoint requirements for direct callers.
+
+Successful validator output must name the input endpoint and include nonblank
+status and fingerprint plus a nonzero checked time. Both worker paths treat
+malformed output as validation failure and apply their normal bounded retry/dead
+letter policy. They cannot persist or acknowledge it as successful work.

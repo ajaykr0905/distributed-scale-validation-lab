@@ -36,6 +36,18 @@ func ValidateEndpoint(endpoint model.Endpoint) error {
 	return nil
 }
 
+// ValidateResult prevents a successful validator call from persisting an empty
+// result or attributing a result to a different endpoint.
+func ValidateResult(endpoint model.Endpoint, result model.ValidationResult) error {
+	if result.EndpointID != endpoint.ID {
+		return fmt.Errorf("validation result endpoint does not match input")
+	}
+	if strings.TrimSpace(result.Status) == "" || strings.TrimSpace(result.Fingerprint) == "" || result.CheckedAt.IsZero() {
+		return fmt.Errorf("validation result requires status, fingerprint, and checked time")
+	}
+	return nil
+}
+
 func (v Basic) Validate(ctx context.Context, endpoint model.Endpoint) (model.ValidationResult, error) {
 	if err := ctx.Err(); err != nil {
 		return model.ValidationResult{}, err
@@ -53,10 +65,11 @@ func (v Basic) Validate(ctx context.Context, endpoint model.Endpoint) (model.Val
 		endpoint.Platform,
 		endpoint.ExpectedVersion,
 	)))
-	return model.ValidationResult{
+	result := model.ValidationResult{
 		EndpointID:  endpoint.ID,
 		Status:      "valid",
 		Fingerprint: fmt.Sprintf("%x", digest[:12]),
 		CheckedAt:   now().UTC(),
-	}, nil
+	}
+	return result, ValidateResult(endpoint, result)
 }

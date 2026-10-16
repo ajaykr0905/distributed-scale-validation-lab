@@ -92,6 +92,9 @@ func (d *DB) Process(ctx context.Context, event Event, v validator.Validator, re
 	}
 	result, validationErr := v.Validate(ctx, endpoint)
 	if validationErr == nil {
+		validationErr = validator.ValidateResult(endpoint, result)
+	}
+	if validationErr == nil {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO durable_results(job_id,endpoint_id,status,fingerprint,checked_at)
  VALUES($1,$2,$3,$4,$5) ON CONFLICT(job_id) DO NOTHING`, event.JobID, result.EndpointID, result.Status, result.Fingerprint, result.CheckedAt); err != nil {
 			return err

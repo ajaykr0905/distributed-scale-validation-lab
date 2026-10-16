@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/model"
 	"github.com/ajaykr0905/distributed-scale-validation-lab/internal/queue"
@@ -141,5 +142,20 @@ func TestExhaustedRedeliveryDoesNotRunValidatorAgain(t *testing.T) {
 	q := &recordingSink{oneDeliveryQueue: oneDeliveryQueue{delivery: d}}
 	if _, err := New(q, store.NewMemory(), v).ProcessOne(context.Background()); err == nil || v.calls != 0 || q.calls != 1 {
 		t.Fatalf("error=%v validator=%d sink=%d", err, v.calls, q.calls)
+	}
+}
+
+func TestInvalidValidatorResultsAreNeverPersistedOrAcknowledged(t *testing.T) {
+	for _, result := range []model.ValidationResult{
+		{},
+		{EndpointID: "different", Status: "valid", Fingerprint: "hash", CheckedAt: time.Unix(1, 0)},
+		{EndpointID: "syn-endpoint-test", Status: "valid", Fingerprint: "hash"},
+	} {
+		d := &recordingDelivery{message: testMessage(t, "invalid-result")}
+		s := store.NewMemory()
+		v := validatorFunc(func(context.Context, model.Endpoint) (model.ValidationResult, error) { return result, nil })
+		if _, err := New(oneDeliveryQueue{delivery: d}, s, v).ProcessOne(context.Background()); err == nil || s.Len() != 0 || d.acks != 0 || len(d.nacks) != 1 || !d.nacks[0] {
+			t.Fatalf("result=%+v error=%v stored=%d delivery=%+v", result, err, s.Len(), d)
+		}
 	}
 }

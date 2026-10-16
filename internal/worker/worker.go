@@ -74,6 +74,9 @@ func (w *Worker) ProcessOne(ctx context.Context) (ProcessResult, error) {
 	}
 
 	result, err := w.validator.Validate(ctx, endpoint)
+	if err == nil {
+		err = validator.ValidateResult(endpoint, result)
+	}
 	if err != nil {
 		cause := fmt.Errorf("validate message %q: %w", message.ID, err)
 		return ProcessResult{}, w.settleFailure(ctx, delivery, message, cause)
