@@ -6,9 +6,12 @@ RabbitMQ integration tests remain opt-in.
 
 ## Run requests
 
-`POST /api/v1/runs` accepts exactly one JSON run options value. Unknown fields,
+`POST /api/v1/runs` accepts exactly one JSON run options object. Unknown fields,
 malformed JSON, additional values, and trailing non-whitespace return 400 before
 a run starts or run counters change. Trailing JSON whitespace is allowed.
+Top-level `null` and other non-object values return 400. An empty object retains
+the existing defaults: 10,000 endpoints, four workers, three attempts, and the
+`public-demo` seed.
 
 ## Request size
 

@@ -98,3 +98,30 @@ func TestRunBodySizeStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestRunRequiresJSONObject(t *testing.T) {
+	for _, body := range []string{`null`, `[]`, `true`, `42`, `"options"`} {
+		t.Run(body, func(t *testing.T) {
+			handler := New()
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/runs", strings.NewReader(body)))
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			metrics := httptest.NewRecorder()
+			handler.ServeHTTP(metrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			if !strings.Contains(metrics.Body.String(), "scale_lab_runs_total 0\n") {
+				t.Fatalf("non-object request executed a run: %s", metrics.Body.String())
+			}
+		})
+	}
+	response := httptest.NewRecorder()
+	New().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/runs", strings.NewReader(`{}`)))
+	var summary runner.Summary
+	if err := json.Unmarshal(response.Body.Bytes(), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || summary.Generated != 10_000 || summary.Workers != 4 {
+		t.Fatalf("empty object must retain defaults: status=%d summary=%+v", response.Code, summary)
+	}
+}

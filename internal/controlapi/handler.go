@@ -34,9 +34,13 @@ func (h *Handler) run(response http.ResponseWriter, request *http.Request) {
 	request.Body = http.MaxBytesReader(response, request.Body, 16<<10)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
-	options := runner.Options{Seed: "public-demo", Count: 10_000, Workers: 4, MaxAttempts: 3}
+	options := &runner.Options{Seed: "public-demo", Count: 10_000, Workers: 4, MaxAttempts: 3}
 	if err := decoder.Decode(&options); err != nil {
 		writeRequestError(response, err, "invalid run request")
+		return
+	}
+	if options == nil {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "run options must be a JSON object"})
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
@@ -44,7 +48,7 @@ func (h *Handler) run(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	summary, err := runner.Run(request.Context(), options)
+	summary, err := runner.Run(request.Context(), *options)
 	h.runs.Add(1)
 	if err != nil {
 		h.failures.Add(1)
