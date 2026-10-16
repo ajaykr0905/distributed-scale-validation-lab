@@ -9,3 +9,12 @@ RabbitMQ integration tests remain opt-in.
 `POST /api/v1/runs` accepts exactly one JSON run options value. Unknown fields,
 malformed JSON, additional values, and trailing non-whitespace return 400 before
 a run starts or run counters change. Trailing JSON whitespace is allowed.
+
+## Request size
+
+Both POST endpoints limit body reads to 16 KiB, including trailing whitespace.
+A detected size overflow returns 413, whether it occurs in the JSON value or
+while checking for a second value. Exactly 16 KiB is permitted. This also applies
+to streamed bodies without a known content length. Syntax errors found before
+the size limit still return 400; the server does not drain malformed input just
+to classify its total length.

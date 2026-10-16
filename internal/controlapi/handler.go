@@ -2,6 +2,7 @@ package controlapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,11 +36,11 @@ func (h *Handler) run(response http.ResponseWriter, request *http.Request) {
 	decoder.DisallowUnknownFields()
 	options := runner.Options{Seed: "public-demo", Count: 10_000, Workers: 4, MaxAttempts: 3}
 	if err := decoder.Decode(&options); err != nil {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid run request"})
+		writeRequestError(response, err, "invalid run request")
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "exactly one JSON run request is required"})
+		writeRequestError(response, err, "exactly one JSON run request is required")
 		return
 	}
 
@@ -52,6 +53,16 @@ func (h *Handler) run(response http.ResponseWriter, request *http.Request) {
 	}
 	h.processed.Add(uint64(summary.Stored))
 	writeJSON(response, http.StatusOK, summary)
+}
+
+func writeRequestError(response http.ResponseWriter, err error, message string) {
+	status := http.StatusBadRequest
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		status = http.StatusRequestEntityTooLarge
+		message = "request body exceeds 16 KiB"
+	}
+	writeJSON(response, status, map[string]string{"error": message})
 }
 
 func (h *Handler) metrics(response http.ResponseWriter, _ *http.Request) {

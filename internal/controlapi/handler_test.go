@@ -3,6 +3,7 @@ package controlapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -67,5 +68,33 @@ func TestRunRequiresExactlyOneJSONValue(t *testing.T) {
 	New().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/runs", strings.NewReader("{\"count\":1} \n\t")))
 	if response.Code != http.StatusOK {
 		t.Fatalf("trailing whitespace rejected: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestRunBodySizeStatus(t *testing.T) {
+	const limit = 16 << 10
+	base := `{"count":1}`
+	for _, tc := range []struct {
+		name string
+		body string
+		code int
+	}{
+		{"exact limit", base + strings.Repeat(" ", limit-len(base)), http.StatusOK},
+		{"trailing overflow", base + strings.Repeat(" ", limit-len(base)+1), http.StatusRequestEntityTooLarge},
+		{"value overflow", `{"seed":"` + strings.Repeat("a", limit) + `","count":1}`, http.StatusRequestEntityTooLarge},
+	} {
+		for _, streamed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/streamed=%t", tc.name, streamed), func(t *testing.T) {
+				request := httptest.NewRequest(http.MethodPost, "/api/v1/runs", strings.NewReader(tc.body))
+				if streamed {
+					request.ContentLength = -1
+				}
+				response := httptest.NewRecorder()
+				New().ServeHTTP(response, request)
+				if response.Code != tc.code {
+					t.Fatalf("status=%d want=%d body=%s", response.Code, tc.code, response.Body.String())
+				}
+			})
+		}
 	}
 }

@@ -26,11 +26,11 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 		decoder.DisallowUnknownFields()
 		var endpoint model.Endpoint
 		if err := decoder.Decode(&endpoint); err != nil {
-			respond(w, 400, map[string]string{"error": "invalid endpoint JSON"})
+			requestError(w, err, "invalid endpoint JSON")
 			return
 		}
 		if err := decoder.Decode(&struct{}{}); err != io.EOF {
-			respond(w, 400, map[string]string{"error": "exactly one JSON endpoint is required"})
+			requestError(w, err, "exactly one JSON endpoint is required")
 			return
 		}
 		if _, _, _, err := RequestIdentity(r.Header.Get("Idempotency-Key"), endpoint); err != nil {
@@ -99,6 +99,16 @@ func HTTP(repository Repository, maxAttempts, capacity int) http.Handler {
 }
 
 var jobID = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+func requestError(w http.ResponseWriter, err error, message string) {
+	status := http.StatusBadRequest
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		status = http.StatusRequestEntityTooLarge
+		message = "request body exceeds 16 KiB"
+	}
+	respond(w, status, map[string]string{"error": message})
+}
 
 func respond(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
